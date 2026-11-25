@@ -6,8 +6,6 @@ int main() {
   std::string prefix = "alignment-bkg-dc-filtered-low-chi2";
 
   RootTrackAnalyzer::Config analyzerCfg;
-  analyzerCfg.chipIds = {10, 12, 14, 16, 18};
-  // analyzerCfg.chipIds = {10, 12, 16, 18};
   analyzerCfg.clusterTreeName = "data";
   analyzerCfg.inClusterDir =
       "/home/romanurmanov/work/E320/E320Prototype/"
@@ -56,6 +54,9 @@ int main() {
   statsOpt.clusterSizeMin = 0;
   statsOpt.clusterSizeMax = 4;
 
+  // Cluster-shape-specific plots chips
+  statsOpt.clusterShapeChipIds = {14};
+
   // Chi2 hists parameters
   statsOpt.chi2Bins = 400;
   statsOpt.chi2Min = 0;
@@ -68,6 +69,10 @@ int main() {
   statsOpt.trackHitsLocalMaxX = chipHalfX;
   statsOpt.trackHitsLocalMinY = -chipHalfY;
   statsOpt.trackHitsLocalMaxY = chipHalfY;
+
+  statsOpt.trackHitsLocalPhiBins = 100;
+  statsOpt.trackHitsLocalPhiMin = -M_PI / 2;
+  statsOpt.trackHitsLocalPhiMax = M_PI / 2;
 
   // Track hits error hists parameters
   statsOpt.trackHitsErrorBinsX = 1024;
@@ -207,6 +212,8 @@ int main() {
   // analyzerOpt.maxVertexY = 0;
   // analyzerOpt.minMomentumX = 0.0;
   // analyzerOpt.maxMomentumX = 10.0;
+  // analyzerOpt.residualCutType = RootTrackAnalyzer::Options::smoothed;
+  // analyzerOpt.residualCuts = {{16, {0.0, 0.06, -0.075, -0.005}}};
 
   // // High chi2 aligned
   // analyzerOpt.minOcc = 0;
@@ -248,6 +255,8 @@ int main() {
   // analyzerOpt.maxVertexY = 10;
   // analyzerOpt.minMomentumX = 1.0;
   // analyzerOpt.maxMomentumX = 10.0;
+  // analyzerOpt.residualCutType = RootTrackAnalyzer::Options::smoothed;
+  // analyzerOpt.residualCuts = {{16, {0.0, 0.06, -0.075, -0.005}}};
 
   // // --------------------------------------------------
   // // Low chi2 aligned

@@ -360,6 +360,10 @@ void RootTrackAnalyzer::enableTrackBranches(const Options &opt) {
     branches.push_back("leaveOneOutHitResiduals");
     branches.push_back("leaveOneOutHitPulls");
   }
+  if (!opt.residualCuts.empty() &&
+      opt.residualCutType == Options::leaveOneOut) {
+    branches.push_back("leaveOneOutHitResiduals");
+  }
   if (opt.plotUncertainty) {
     branches.push_back("trackHitCovs");
     branches.push_back("leaveOneOutHitResiduals");
@@ -380,9 +384,6 @@ void RootTrackAnalyzer::process(const Options &opt) {
   stats.uncertaintyEnabled = opt.plotUncertainty;
   stats.correlationsEnabled = opt.plotCorrelations;
   stats.init(opt.prefix, opt.statsOpt);
-
-  // Chip of the cluster-shape-specific plots
-  const std::size_t clusterShapeGeoId = 14;
 
   // The cluster occupancy is only
   // needed for the events with tracks
@@ -429,6 +430,17 @@ void RootTrackAnalyzer::process(const Options &opt) {
         clustersPerEvent.at(m_eventId) > opt.maxOcc) {
       continue;
     }
+    bool passedChipOcc = true;
+    for (const auto &[chipId, nClusters] :
+         clustersPerEventPerChip.at(m_eventId)) {
+      if (nClusters < opt.minChipOcc || nClusters > opt.maxChipOcc) {
+        passedChipOcc = false;
+        break;
+      }
+    }
+    if (!passedChipOcc) {
+      continue;
+    }
     stats.nPassedOccupancy++;
     if (opt.requireEpicsParity && m_epicsParity != opt.epicsParity) {
       continue;
@@ -468,7 +480,9 @@ void RootTrackAnalyzer::process(const Options &opt) {
       continue;
     }
     stats.nPassedMomentumZ++;
-
+    if (!passResidualCuts(opt)) {
+      continue;
+    }
     stats.nPassedResiduals++;
 
     tracksPerEvent[m_eventId]++;
@@ -478,7 +492,7 @@ void RootTrackAnalyzer::process(const Options &opt) {
       fillLeaveOneOut(stats);
     }
     if (opt.plotUncertainty) {
-      fillUncertainty(stats, clusterShapeGeoId);
+      fillUncertainty(stats);
     }
     if (opt.plotCorrelations) {
       fillCorrelations(stats);
@@ -494,7 +508,7 @@ void RootTrackAnalyzer::process(const Options &opt) {
     for (std::size_t shapeId : stats.uncertainty.clusterShapeIds) {
       stats.uncertainty.bookClusterShape(shapeId, opt.statsOpt);
     }
-    stats.uncertainty.finalize(clusterShapeGeoId);
+    stats.uncertainty.finalize(opt.statsOpt);
   }
 
   for (const auto &[id, nTracks] : tracksPerEvent) {
@@ -530,7 +544,8 @@ void RootTrackAnalyzer::process(const Options &opt) {
 
   // Print stats
   auto [probErrLeft, probErrRight] = getBinomialErrors(
-      stats.nPassedResiduals, stats.nTotal - stats.nPassedResiduals, 1e-5);
+      stats.nPassedResiduals, stats.nTotal - stats.nPassedResiduals,
+      opt.probErrorStepSize);
   std::cout << "Prob: "
             << static_cast<double>(stats.nPassedResiduals) / stats.nTotal
             << " + " << probErrRight << " - " << probErrLeft << "\n";
@@ -543,6 +558,36 @@ void RootTrackAnalyzer::process(const Options &opt) {
             << stats.nTotal * probErrLeft / opt.nBXs << "\n";
 
   stats.print();
+}
+
+bool RootTrackAnalyzer::passResidualCuts(const Options &opt) const {
+  const std::vector<TVector2> *residuals = nullptr;
+  switch (opt.residualCutType) {
+    case Options::predicted:
+      residuals = m_predictedHitResiduals;
+      break;
+    case Options::filtered:
+      residuals = m_filteredHitResiduals;
+      break;
+    case Options::smoothed:
+      residuals = m_smoothedHitResiduals;
+      break;
+    case Options::leaveOneOut:
+      residuals = m_leaveOneOutHitResiduals;
+      break;
+  }
+  for (std::size_t j = 0; j < m_geometryIds->size(); j++) {
+    auto window = opt.residualCuts.find(m_geometryIds->at(j));
+    if (window == opt.residualCuts.end()) {
+      continue;
+    }
+    const auto &res = residuals->at(j);
+    if (res.X() < window->second.minX || res.X() > window->second.maxX ||
+        res.Y() < window->second.minY || res.Y() > window->second.maxY) {
+      return false;
+    }
+  }
+  return true;
 }
 
 void RootTrackAnalyzer::fillCore(
@@ -706,14 +751,12 @@ void RootTrackAnalyzer::fillLeaveOneOut(Stats &stats) {
   }
 }
 
-void RootTrackAnalyzer::fillUncertainty(Stats &stats,
-                                        std::size_t clusterShapeGeoId) {
+void RootTrackAnalyzer::fillUncertainty(Stats &stats) {
   auto &unc = stats.uncertainty;
   for (std::size_t j = 0; j < m_geometryIds->size(); j++) {
     std::size_t geoId = m_geometryIds->at(j);
 
     std::size_t shapeId = m_trackHitClusterMatrixShapeIds->at(j);
-    unc.clusterShapeIds.insert(shapeId);
 
     // Track hits errors
     const auto &trackHitCov = m_trackHitCovs->at(j);
@@ -750,7 +793,8 @@ void RootTrackAnalyzer::fillUncertainty(Stats &stats,
     unc.hitRecords.push_back(record);
 
     // Cluster shape
-    if (geoId == clusterShapeGeoId) {
+    if (stats.opt.clusterShapeChipIds.contains(geoId)) {
+      unc.clusterShapeIds.insert(shapeId);
       unc.clusterMatrices.erase(shapeId);
       unc.clusterMatrices.emplace(shapeId, m_trackHitClusterMatrices->at(j));
     }
@@ -1187,8 +1231,10 @@ void RootTrackAnalyzer::Stats::Core::init(const std::string &prefix,
     std::string rxtphiName =
         prefix + "SmoothedResidualsXTrackHitsLocalPhi" + std::to_string(id);
     smoothedResidualsXTrackHitsLocalPhiHists.insert(
-        {id, TH2D(rxtphiName.c_str(), rxtphiName.c_str(), 100, -M_PI, M_PI,
-                  opt.residualsXBins, opt.residualsXMin, opt.residualsXMax)});
+        {id,
+         TH2D(rxtphiName.c_str(), rxtphiName.c_str(), opt.trackHitsLocalPhiBins,
+              opt.trackHitsLocalPhiMin, opt.trackHitsLocalPhiMax,
+              opt.residualsXBins, opt.residualsXMin, opt.residualsXMax)});
     std::string rytxName =
         prefix + "SmoothedResidualsYTrackHitsLocalX" + std::to_string(id);
     smoothedResidualsYTrackHitsLocalXHists.insert(
@@ -1204,8 +1250,10 @@ void RootTrackAnalyzer::Stats::Core::init(const std::string &prefix,
     std::string rytphiName =
         prefix + "SmoothedResidualsYTrackHitsLocalPhi" + std::to_string(id);
     smoothedResidualsYTrackHitsLocalPhiHists.insert(
-        {id, TH2D(rytphiName.c_str(), rytphiName.c_str(), 100, -M_PI, M_PI,
-                  opt.residualsYBins, opt.residualsYMin, opt.residualsYMax)});
+        {id,
+         TH2D(rytphiName.c_str(), rytphiName.c_str(), opt.trackHitsLocalPhiBins,
+              opt.trackHitsLocalPhiMin, opt.trackHitsLocalPhiMax,
+              opt.residualsYBins, opt.residualsYMin, opt.residualsYMax)});
 
     std::string rxvxName =
         prefix + "SmoothedResidualsXVertexEstX" + std::to_string(id);
@@ -2211,8 +2259,7 @@ void RootTrackAnalyzer::Stats::Uncertainty::bookClusterShape(
             opt.trackHitsLooErrorMinY, opt.trackHitsLooErrorMaxY)});
 }
 
-void RootTrackAnalyzer::Stats::Uncertainty::finalize(
-    std::size_t clusterShapeGeoId) {
+void RootTrackAnalyzer::Stats::Uncertainty::finalize(const Options &opt) {
   for (const auto &record : hitRecords) {
     std::size_t geoId = record.geoId;
 
@@ -2238,7 +2285,7 @@ void RootTrackAnalyzer::Stats::Uncertainty::finalize(
     looTrackHitsErrorXTrackHitsLocalXHists.at(geoId).Fill(looTrackHitErrorX,
                                                           record.hitLocalX);
 
-    if (geoId == clusterShapeGeoId) {
+    if (opt.clusterShapeChipIds.contains(geoId)) {
       clusterMatrixLooResXHists.at(record.shapeId).Fill(record.looResX);
       clusterMatrixLooResYHists.at(record.shapeId).Fill(record.looResY);
 
@@ -2252,7 +2299,7 @@ void RootTrackAnalyzer::Stats::Uncertainty::finalize(
     for (std::size_t n = 0; n < clusterMatrix.GetNrows(); n++) {
       for (std::size_t m = 0; m < clusterMatrix.GetNcols(); m++) {
         double x = m + 0.5;
-        double y = 4 - n - 0.5;
+        double y = opt.clusterSizeMax - n - 0.5;
         std::size_t bin = clusterMatricesHists.at(shapeId).FindBin(x, y);
 
         clusterMatricesHists.at(shapeId).SetBinContent(bin,
