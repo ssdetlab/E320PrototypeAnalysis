@@ -64,6 +64,9 @@ class RootTrackAnalyzer {
       double clusterSizeMin;
       double clusterSizeMax;
 
+      /// Chips of the cluster-shape-specific plots
+      std::set<std::size_t> clusterShapeChipIds;
+
       std::size_t clusterDXBins;
       double clusterDXMin;
       double clusterDXMax;
@@ -84,6 +87,11 @@ class RootTrackAnalyzer {
       double trackHitsLocalMaxX;
       double trackHitsLocalMinY;
       double trackHitsLocalMaxY;
+
+      /// Local track hits azimuth hists parameters
+      std::size_t trackHitsLocalPhiBins;
+      double trackHitsLocalPhiMin;
+      double trackHitsLocalPhiMax;
 
       /// Track hits errors parameters
       std::size_t trackHitsErrorBinsX;
@@ -337,7 +345,7 @@ class RootTrackAnalyzer {
 
       /// Fill the leave-one-out hit error histograms
       /// from the cached track hits
-      void finalize(std::size_t clusterShapeGeoId);
+      void finalize(const Options& opt);
 
       void normalize(std::size_t nBXs, const Options& opt);
 
@@ -372,10 +380,11 @@ class RootTrackAnalyzer {
       std::unordered_map<std::size_t, TH1D> clusterMatrixLooErrorYHists;
 
       /// Cluster shape IDs of the track hits
+      /// on the cluster shape chips
       std::set<std::size_t> clusterShapeIds;
 
       /// Last cluster matrix of each shape
-      /// on the cluster shape chip
+      /// on the cluster shape chips
       std::map<std::size_t, TMatrixD> clusterMatrices;
 
       /// Leave-one-out residuals moments per chip
@@ -446,8 +455,6 @@ class RootTrackAnalyzer {
 
   /// @brief nested configuration struct
   struct Config {
-    /// Chip ids
-    std::set<std::size_t> chipIds;
     /// Input track tree name
     std::string trackTreeName;
     /// Path to input track files directory
@@ -469,6 +476,9 @@ class RootTrackAnalyzer {
     /// Cluster occupancy range
     std::size_t minOcc;
     std::size_t maxOcc;
+    /// Per-chip cluster occupancy range, required on every chip
+    std::size_t minChipOcc = 0;
+    std::size_t maxChipOcc = std::numeric_limits<std::size_t>::max();
     /// Flag to apply epics parity cut
     bool requireEpicsParity;
     /// Epics parity cut
@@ -494,16 +504,31 @@ class RootTrackAnalyzer {
     /// Momentum X cut
     double minMomentumX = -std::numeric_limits<double>::max();
     double maxMomentumX = std::numeric_limits<double>::max();
+    /// Residuals of the residual window cut
+    enum ResidualType : int {
+      predicted = 0,
+      filtered = 1,
+      smoothed = 2,
+      leaveOneOut = 3
+    };
+    ResidualType residualCutType = smoothed;
+    /// Residual window cut per chip, chips without
+    /// a window are not cut on
+    struct ResidualWindow {
+      double minX;
+      double maxX;
+      double minY;
+      double maxY;
+    };
+    std::map<std::size_t, ResidualWindow> residualCuts;
     /// Plot the leave-one-out block
     bool plotLeaveOneOut = false;
     /// Plot the uncertainty analysis block
     bool plotUncertainty = false;
     /// Plot the global correlations block
     bool plotCorrelations = false;
-    /// Slicing step width in number of bins
-    std::size_t sliceStepSize = 20;
-    /// Slicing step width in number of bins
-    std::size_t sliceStepWidth = 20;
+    /// Likelihood scan step of the selection probability errors
+    double probErrorStepSize = 1e-5;
   };
 
   RootTrackAnalyzer(const RootTrackAnalyzer&) = delete;
@@ -555,8 +580,11 @@ class RootTrackAnalyzer {
   /// @brief fill the leave-one-out plots with the current track
   void fillLeaveOneOut(Stats& stats);
 
+  /// @brief check the residual window cut on the current track
+  bool passResidualCuts(const Options& opt) const;
+
   /// @brief fill the uncertainty plots with the current track
-  void fillUncertainty(Stats& stats, std::size_t clusterShapeGeoId);
+  void fillUncertainty(Stats& stats);
 
   /// @brief fill the global correlations plots with the current track
   void fillCorrelations(Stats& stats);
