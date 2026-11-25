@@ -1,0 +1,7 @@
+.cache
+.git
+*.root
+*.pdf
+build
+data
+sim
