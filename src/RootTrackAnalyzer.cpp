@@ -814,6 +814,7 @@ void RootTrackAnalyzer::process(const Options &opt) {
       static_cast<double>(stats.nPassedResiduals) / opt.nBXs);
 
   // Normalize
+  stats.xCountHist.Scale(1.0 / opt.nBXs);
   stats.magnetConfHist.Scale(1.0 / opt.nBXs);
 
   stats.nTracksHist.Scale(1.0 / opt.nBXs);
@@ -851,9 +852,7 @@ void RootTrackAnalyzer::process(const Options &opt) {
   stats.smoothedPullsYCumulativeHist.Scale(
       1.0 / stats.smoothedPullsYCumulativeHist.Integral(), "width");
 
-  for (std::size_t j = 0; j < m_smoothedHitPulls->size(); j++) {
-    std::size_t geoId = m_geometryIds->at(j);
-
+  for (std::size_t geoId : opt.statsOpt.chipIds) {
     stats.nClustersHist.at(geoId).Scale(1.0 / opt.nBXs);
 
     stats.trackHitsLocalHists.at(geoId).Scale(1.0 / opt.nBXs);
@@ -975,15 +974,16 @@ void RootTrackAnalyzer::process(const Options &opt) {
 
   // Print stats
   auto [probErrLeft, probErrRight] = getBinomialErrors(
-      stats.nPassedVertexY, stats.nTotal - stats.nPassedVertexY, 1e-5);
+      stats.nPassedResiduals, stats.nTotal - stats.nPassedResiduals, 1e-5);
   std::cout << "Prob: "
-            << static_cast<double>(stats.nPassedVertexY) / stats.nTotal << " + "
-            << probErrRight << " - " << probErrLeft << "\n";
-  std::cout << "Tracks: " << stats.nPassedVertexY << " + "
+            << static_cast<double>(stats.nPassedResiduals) / stats.nTotal
+            << " + " << probErrRight << " - " << probErrLeft << "\n";
+  std::cout << "Tracks: " << stats.nPassedResiduals << " + "
             << stats.nTotal * probErrRight << " - "
             << stats.nTotal * probErrLeft << "\n";
-  std::cout << "Rate: " << static_cast<double>(stats.nPassedVertexY) / opt.nBXs
-            << " + " << stats.nTotal * probErrRight / opt.nBXs << " - "
+  std::cout << "Rate: "
+            << static_cast<double>(stats.nPassedResiduals) / opt.nBXs << " + "
+            << stats.nTotal * probErrRight / opt.nBXs << " - "
             << stats.nTotal * probErrLeft / opt.nBXs << "\n";
 
   stats.print();
@@ -1112,8 +1112,8 @@ void RootTrackAnalyzer::Stats::init(const std::string &pfix,
         prefix + "TrackHitsErrorY" + std::to_string(id);
     trackHitsErrorYHists.insert(
         {id, TH1D(nameTrackHitsErrorY.c_str(), nameTrackHitsErrorY.c_str(),
-                  opt.trackHitsErrorBinsX, opt.trackHitsErrorMinX,
-                  opt.trackHitsErrorMaxX)});
+                  opt.trackHitsErrorBinsY, opt.trackHitsErrorMinY,
+                  opt.trackHitsErrorMaxY)});
     std::string nameTrackHitsErrorXY =
         prefix + "TrackHitsErrorXY" + std::to_string(id);
     trackHitsErrorXYHists.insert(
@@ -1772,7 +1772,7 @@ void RootTrackAnalyzer::Stats::print() {
   cfgTrackHitsErrorY.canvasXSize = 10000;
   cfgTrackHitsErrorY.canvasYSize = 10000. / chipIds.size();
   cfgTrackHitsErrorY.stats = true;
-  cfgTrackHitsErrorY.xTitle = "#sigma_{x_{hit}}, [mm]";
+  cfgTrackHitsErrorY.xTitle = "#sigma_{y_{hit}}, [mm]";
   cfgTrackHitsErrorY.yTitle = "Hits/BX";
 
   HistPainterConfig cfgTrackHitsErrorXY;
@@ -1800,9 +1800,9 @@ void RootTrackAnalyzer::Stats::print() {
       10000. / chipIds.size();
   cfgLooTrackHitsErrorModelTrackHitsErrorY.stats = false;
   cfgLooTrackHitsErrorModelTrackHitsErrorY.xTitle =
-      "#sigma_{x_{hit, loo}}, [mm]";
+      "#sigma_{y_{hit, loo}}, [mm]";
   cfgLooTrackHitsErrorModelTrackHitsErrorY.yTitle =
-      "#sigma_{x_{hit, model}}, [mm]";
+      "#sigma_{y_{hit, model}}, [mm]";
   cfgLooTrackHitsErrorModelTrackHitsErrorY.option = "col";
 
   HistPainterConfig cfgLooTrackHitsErrorXTrackHitsLocalX;
@@ -2037,7 +2037,7 @@ void RootTrackAnalyzer::Stats::print() {
     ppyHists.push_back({predictedPullsYHists.at(id), cfgPullY});
     fpyHists.push_back({filteredPullsYHists.at(id), cfgPullY});
     spyHists.push_back({smoothedPullsYHists.at(id), cfgPullY});
-    loopyHists.push_back({leaveOneOutPullsYHists.at(id), cfgPullX});
+    loopyHists.push_back({leaveOneOutPullsYHists.at(id), cfgPullY});
   }
   saveHist(c, cOption, ppxHists);
   saveHist(c, cOption, fpxHists);
@@ -2323,7 +2323,7 @@ void RootTrackAnalyzer::Stats::print() {
     ryvxHists.push_back({smoothedResidualsYVertexEstXHists.at(id), cfgRyVx});
     ryvyHists.push_back({smoothedResidualsYVertexEstYHists.at(id), cfgRyVy});
     rxpyHists.push_back(
-        {smoothedResidualsYOriginMomentumEstPyHists.at(id), cfgRxPy});
+        {smoothedResidualsXOriginMomentumEstPyHists.at(id), cfgRxPy});
     rypyHists.push_back(
         {smoothedResidualsYOriginMomentumEstPyHists.at(id), cfgRyPy});
   }
