@@ -1,12 +1,15 @@
 #include "RootTrackAnalyzer.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <filesystem>
 #include <iterator>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 #include <TCanvas.h>
 
@@ -321,21 +324,91 @@ RootTrackAnalyzer::RootTrackAnalyzer(const Config &config) : m_cfg(config) {
   m_trackTree->SetBranchAddress("xCount", &m_xCount);
 }
 
+std::unordered_set<std::size_t> RootTrackAnalyzer::collectTrackEventIds() {
+  m_trackTree->SetBranchStatus("*", false);
+  m_trackTree->SetBranchStatus("eventId", true);
+
+  std::unordered_set<std::size_t> eventIds;
+  for (std::size_t i = 0; i < m_trackTree->GetEntries(); i++) {
+    m_trackTree->GetEntry(i);
+    eventIds.insert(m_eventId);
+  }
+  return eventIds;
+}
+
+void RootTrackAnalyzer::enableTrackBranches(const Options &opt) {
+  // Branches needed by the cuts and the core plots
+  std::vector<std::string> branches = {"eventId",
+                                       "epicsParity",
+                                       "xCount",
+                                       "chi2Predicted",
+                                       "chi2Filtered",
+                                       "chi2Smoothed",
+                                       "vertexEst",
+                                       "originMomentumEst",
+                                       "dipoleStrength",
+                                       "xCorrectorStrength",
+                                       "geometryIds",
+                                       "trackHitsLocal",
+                                       "predictedHitResiduals",
+                                       "filteredHitResiduals",
+                                       "smoothedHitResiduals",
+                                       "predictedHitPulls",
+                                       "filteredHitPulls",
+                                       "smoothedHitPulls"};
+  if (opt.plotLeaveOneOut) {
+    branches.push_back("leaveOneOutHitResiduals");
+    branches.push_back("leaveOneOutHitPulls");
+  }
+  if (opt.plotUncertainty) {
+    branches.push_back("trackHitCovs");
+    branches.push_back("leaveOneOutHitResiduals");
+    branches.push_back("leaveOneOutTrackStateCovs");
+    branches.push_back("trackHitClusterMatrices");
+    branches.push_back("trackHitClusterMatrixShapeIds");
+  }
+
+  m_trackTree->SetBranchStatus("*", false);
+  for (const auto &branch : branches) {
+    m_trackTree->SetBranchStatus(branch.c_str(), true);
+  }
+}
+
 void RootTrackAnalyzer::process(const Options &opt) {
   Stats stats;
+  stats.leaveOneOutEnabled = opt.plotLeaveOneOut;
+  stats.uncertaintyEnabled = opt.plotUncertainty;
+  stats.correlationsEnabled = opt.plotCorrelations;
   stats.init(opt.prefix, opt.statsOpt);
 
-  std::unordered_map<std::size_t, std::size_t> clustersPerEvent;
+  // Chip of the cluster-shape-specific plots
+  const std::size_t clusterShapeGeoId = 14;
+
+  // The cluster occupancy is only
+  // needed for the events with tracks
+  std::cout << "COLLECTING TRACK EVENT IDS\n";
+  std::unordered_set<std::size_t> trackEventIds = collectTrackEventIds();
+
+  std::cout << "COLLECTING CLUSTER OCCUPANCY\n";
+  std::vector<std::size_t> clusterEntries;
+  m_clusterTree->SetBranchStatus("event", false);
+  for (std::size_t i = 0; i < m_clusterTree->GetEntries(); i++) {
+    m_clusterTree->GetEntry(i);
+    if (trackEventIds.contains(m_clusterEventId)) {
+      clusterEntries.push_back(i);
+    }
+  }
+  m_clusterTree->SetBranchStatus("event", true);
+
+  std::unordered_map<std::size_t, double> clustersPerEvent;
   std::unordered_map<std::size_t, std::unordered_map<std::size_t, std::size_t>>
       clustersPerEventPerChip;
-  std::unordered_map<std::size_t, std::unordered_map<std::size_t, double>>
-      clusterSizePerEventPerChip;
-  for (std::size_t i = 0; i < m_clusterTree->GetEntries(); i++) {
+  for (std::size_t i : clusterEntries) {
     m_clusterTree->GetEntry(i);
     for (const auto &stEv : m_detEv->staveEventBuffer) {
       for (const auto &chEv : stEv.chipEventBuffer) {
         clustersPerEvent[m_clusterEventId] +=
-            chEv.hits.size() / stEv.chipEventBuffer.size();
+            static_cast<double>(chEv.hits.size()) / stEv.chipEventBuffer.size();
         clustersPerEventPerChip[m_clusterEventId]
                                [opt.statsOpt.chipIdsMap.at(chEv.chipId)] +=
             chEv.hits.size();
@@ -343,9 +416,10 @@ void RootTrackAnalyzer::process(const Options &opt) {
     }
   }
 
+  enableTrackBranches(opt);
+
   std::size_t nEntries = m_trackTree->GetEntries();
   std::unordered_map<std::size_t, std::size_t> tracksPerEvent;
-  std::set<std::size_t> clusterShapeIds;
   for (std::size_t i = 0; i < nEntries; i++) {
     m_trackTree->GetEntry(i);
 
@@ -395,582 +469,64 @@ void RootTrackAnalyzer::process(const Options &opt) {
     }
     stats.nPassedMomentumZ++;
 
-    // // High chi2 filtered
-    // bool passed = true;
-    // for (std::size_t j = 0; j < m_smoothedHitResiduals->size(); j++) {
-    //   std::size_t geoId = m_geometryIds->at(j);
-    //   const auto &smoothedRes = m_smoothedHitResiduals->at(j);
-    //   if (geoId == 16) {
-    //     if (smoothedRes.X() < 0.0 || smoothedRes.X() > 0.06 ||
-    //         smoothedRes.Y() < -0.075 || smoothedRes.Y() > -0.005) {
-    //       passed = false;
-    //       break;
-    //     }
-    //   }
-    // }
-    // if (!passed) {
-    //   continue;
-    // }
-
-    // // Low chi2 filtered
-    // bool passed = true;
-    // for (std::size_t j = 0; j < m_smoothedHitResiduals->size(); j++) {
-    //   std::size_t geoId = m_geometryIds->at(j);
-    //   const auto &smoothedRes = m_smoothedHitResiduals->at(j);
-    //   if (geoId == 16) {
-    //     if (smoothedRes.X() < 0.0 || smoothedRes.X() > 0.06 ||
-    //         smoothedRes.Y() < -0.075 || smoothedRes.Y() > -0.005) {
-    //       passed = false;
-    //       break;
-    //     }
-    //   }
-    // }
-    // if (!passed) {
-    //   continue;
-    // }
-
     stats.nPassedResiduals++;
 
     tracksPerEvent[m_eventId]++;
 
-    stats.xCountHist.Fill(m_xCount);
-
-    stats.magnetConfHist.Fill(m_dipoleStrength, m_xCorrectorStrength);
-
-    // Chi2
-    stats.chi2PredictedHist.Fill(m_chi2Predicted);
-    stats.chi2FilteredHist.Fill(m_chi2Filtered);
-    stats.chi2SmoothedHist.Fill(m_chi2Smoothed);
-
-    /// Chi2 functions
-    stats.chi2SmoothedXCountHist.Fill(m_chi2Smoothed, m_xCount);
-
-    std::unordered_map<std::size_t, double> hitXX;
-    std::unordered_map<std::size_t, double> hitYY;
-
-    std::unordered_map<std::size_t, double> resXX;
-    std::unordered_map<std::size_t, double> resYY;
-    for (std::size_t j = 0; j < m_smoothedHitPulls->size(); j++) {
-      std::size_t geoId = m_geometryIds->at(j);
-
-      stats.nClustersHist.at(geoId).Fill(
-          clustersPerEventPerChip.at(m_eventId).at(geoId));
-
-      clusterShapeIds.insert(m_trackHitClusterMatrixShapeIds->at(j));
-
-      // Residuals
-      const auto &predictedRes = m_predictedHitResiduals->at(j);
-      const auto &filteredRes = m_filteredHitResiduals->at(j);
-      const auto &smoothedRes = m_smoothedHitResiduals->at(j);
-      const auto &leaveOneOutRes = m_leaveOneOutHitResiduals->at(j);
-
-      stats.predictedResidualsXCumulativeHist.Fill(predictedRes.X());
-      stats.filteredResidualsXCumulativeHist.Fill(filteredRes.X());
-      stats.smoothedResidualsXCumulativeHist.Fill(smoothedRes.X());
-
-      stats.predictedResidualsYCumulativeHist.Fill(predictedRes.Y());
-      stats.filteredResidualsYCumulativeHist.Fill(filteredRes.Y());
-      stats.smoothedResidualsYCumulativeHist.Fill(smoothedRes.Y());
-
-      stats.filteredResidualsXYHists.at(geoId).Fill(filteredRes.X(),
-                                                    filteredRes.Y());
-      stats.smoothedResidualsXYHists.at(geoId).Fill(smoothedRes.X(),
-                                                    smoothedRes.Y());
-      stats.leaveOneOutResidualsXYHists.at(geoId).Fill(leaveOneOutRes.X(),
-                                                       leaveOneOutRes.Y());
-
-      resXX[geoId] = smoothedRes.X();
-      resYY[geoId] = smoothedRes.Y();
-
-      stats.predictedResidualsXHists.at(geoId).Fill(predictedRes.X());
-      stats.filteredResidualsXHists.at(geoId).Fill(filteredRes.X());
-      stats.smoothedResidualsXHists.at(geoId).Fill(smoothedRes.X());
-      stats.leaveOneOutResidualsXHists.at(geoId).Fill(leaveOneOutRes.X());
-
-      stats.predictedResidualsYHists.at(geoId).Fill(predictedRes.Y());
-      stats.filteredResidualsYHists.at(geoId).Fill(filteredRes.Y());
-      stats.smoothedResidualsYHists.at(geoId).Fill(smoothedRes.Y());
-      stats.leaveOneOutResidualsYHists.at(geoId).Fill(leaveOneOutRes.Y());
-
-      // Pulls
-      const auto &predictedPull = m_predictedHitPulls->at(j);
-      const auto &filteredPull = m_filteredHitPulls->at(j);
-      const auto &smoothedPull = m_smoothedHitPulls->at(j);
-      const auto &leaveOneOutPull = m_leaveOneOutHitPulls->at(j);
-
-      stats.predictedPullsXCumulativeHist.Fill(predictedPull.X());
-      stats.filteredPullsXCumulativeHist.Fill(filteredPull.X());
-      stats.smoothedPullsXCumulativeHist.Fill(smoothedPull.X());
-
-      stats.predictedPullsYCumulativeHist.Fill(predictedPull.Y());
-      stats.filteredPullsYCumulativeHist.Fill(filteredPull.Y());
-      stats.smoothedPullsYCumulativeHist.Fill(smoothedPull.Y());
-
-      stats.predictedPullsXHists.at(geoId).Fill(predictedPull.X());
-      stats.filteredPullsXHists.at(geoId).Fill(filteredPull.X());
-      stats.smoothedPullsXHists.at(geoId).Fill(smoothedPull.X());
-      stats.leaveOneOutPullsXHists.at(geoId).Fill(leaveOneOutPull.X());
-
-      stats.predictedPullsYHists.at(geoId).Fill(predictedPull.Y());
-      stats.filteredPullsYHists.at(geoId).Fill(filteredPull.Y());
-      stats.smoothedPullsYHists.at(geoId).Fill(smoothedPull.Y());
-      stats.leaveOneOutPullsYHists.at(geoId).Fill(leaveOneOutPull.Y());
-
-      // Local track hits
-      const auto &trackHitLocal = m_trackHitsLocal->at(j);
-      stats.trackHitsLocalHists.at(geoId).Fill(trackHitLocal.X(),
-                                               trackHitLocal.Y());
-
-      hitXX[geoId] = trackHitLocal.X();
-      hitYY[geoId] = trackHitLocal.Y();
-
-      // Track hits errors
-      const auto &trackHitCov = m_trackHitCovs->at(j);
-      double hitErrorX = std::sqrt(trackHitCov(0, 0));
-      double hitErrorY = std::sqrt(trackHitCov(1, 1));
-      stats.trackHitsErrorXHists.at(geoId).Fill(hitErrorX);
-      stats.trackHitsErrorYHists.at(geoId).Fill(hitErrorY);
-      stats.trackHitsErrorXYHists.at(geoId).Fill(hitErrorX, hitErrorY);
-
-      // Track residuals vs track hit parameters
-      auto &rxhxHist = stats.smoothedResidualsXTrackHitsLocalXHists.at(geoId);
-      auto &rxhyHist = stats.smoothedResidualsXTrackHitsLocalYHists.at(geoId);
-      auto &rxhphiHist =
-          stats.smoothedResidualsXTrackHitsLocalPhiHists.at(geoId);
-      auto &ryhxHist = stats.smoothedResidualsYTrackHitsLocalXHists.at(geoId);
-      auto &ryhyHist = stats.smoothedResidualsYTrackHitsLocalYHists.at(geoId);
-      auto &ryhphiHist =
-          stats.smoothedResidualsYTrackHitsLocalPhiHists.at(geoId);
-      auto &rxhexHist = stats.smoothedResidualsXTrackHitsErrorXHists.at(geoId);
-      auto &ryheyHist = stats.smoothedResidualsYTrackHitsErrorYHists.at(geoId);
-
-      rxhxHist.Fill(trackHitLocal.X(), smoothedRes.X());
-      rxhyHist.Fill(trackHitLocal.Y(), smoothedRes.X());
-      rxhphiHist.Fill(std::atan(trackHitLocal.Y() / trackHitLocal.X()),
-                      smoothedRes.X());
-      ryhxHist.Fill(trackHitLocal.X(), smoothedRes.Y());
-      ryhyHist.Fill(trackHitLocal.Y(), smoothedRes.Y());
-      ryhphiHist.Fill(std::atan(trackHitLocal.Y() / trackHitLocal.X()),
-                      smoothedRes.Y());
-      rxhexHist.Fill(hitErrorX, smoothedRes.X());
-      ryheyHist.Fill(hitErrorY, smoothedRes.Y());
-
-      // Track residuals vs track parameters
-      auto &rxvxHist = stats.smoothedResidualsXVertexEstXHists.at(geoId);
-      auto &rxvyHist = stats.smoothedResidualsXVertexEstYHists.at(geoId);
-      auto &ryvxHist = stats.smoothedResidualsYVertexEstXHists.at(geoId);
-      auto &ryvyHist = stats.smoothedResidualsYVertexEstYHists.at(geoId);
-
-      auto &rxpyHist =
-          stats.smoothedResidualsXOriginMomentumEstPyHists.at(geoId);
-      auto &rypyHist =
-          stats.smoothedResidualsYOriginMomentumEstPyHists.at(geoId);
-
-      rxvxHist.Fill(-m_vertexEst->Z(), smoothedRes.X());
-      rxvyHist.Fill(m_vertexEst->Y(), smoothedRes.X());
-      ryvxHist.Fill(-m_vertexEst->Z(), smoothedRes.Y());
-      ryvyHist.Fill(m_vertexEst->Y(), smoothedRes.Y());
-
-      rxpyHist.Fill(m_originMomentumEst->Py(), smoothedRes.X());
-      rypyHist.Fill(m_originMomentumEst->Py(), smoothedRes.Y());
-
-      // Track pulls vs track hit parameters
-      auto &pxhxHist = stats.smoothedPullsXTrackHitsLocalXHists.at(geoId);
-      auto &pxhyHist = stats.smoothedPullsXTrackHitsLocalYHists.at(geoId);
-      auto &pyhxHist = stats.smoothedPullsYTrackHitsLocalXHists.at(geoId);
-      auto &pyhyHist = stats.smoothedPullsYTrackHitsLocalYHists.at(geoId);
-
-      pxhxHist.Fill(trackHitLocal.X(), smoothedPull.X());
-      pxhyHist.Fill(trackHitLocal.Y(), smoothedPull.X());
-      pyhxHist.Fill(trackHitLocal.X(), smoothedPull.Y());
-      pyhyHist.Fill(trackHitLocal.Y(), smoothedPull.Y());
+    fillCore(stats, clustersPerEventPerChip.at(m_eventId));
+    if (opt.plotLeaveOneOut) {
+      fillLeaveOneOut(stats);
     }
-    std::vector<std::size_t> chipIds_(opt.statsOpt.chipIds.begin(),
-                                      opt.statsOpt.chipIds.end());
-    std::sort(chipIds_.begin(), chipIds_.end());
-    for (std::size_t n = 0; n < chipIds_.size() - 1; n++) {
-      std::size_t idN = chipIds_.at(n);
-      for (std::size_t m = n + 1; m < chipIds_.size(); m++) {
-        std::size_t idM = chipIds_.at(m);
-
-        stats.trackHitsLocalXXHists.at(idN * 100 + idM)
-            .Fill(hitXX.at(idN), hitXX.at(idM));
-        stats.trackHitsLocalYYHists.at(idN * 100 + idM)
-            .Fill(hitYY.at(idN), hitYY.at(idM));
-
-        stats.smoothedResidualsXXHists.at(idN * 100 + idM)
-            .Fill(resXX.at(idN), resXX.at(idM));
-        stats.smoothedResidualsYYHists.at(idN * 100 + idM)
-            .Fill(resYY.at(idN), resYY.at(idM));
-      }
+    if (opt.plotUncertainty) {
+      fillUncertainty(stats, clusterShapeGeoId);
+    }
+    if (opt.plotCorrelations) {
+      fillCorrelations(stats);
     }
 
-    // Momentum
-    stats.originMomentumEstPxHist.Fill(-m_originMomentumEst->Pz());
-    stats.originMomentumEstPyHist.Fill(m_originMomentumEst->Py());
-    stats.originMomentumEstPzHist.Fill(m_originMomentumEst->Px());
-
-    // Momentum direction
-    stats.originMomentumEstDxHist.Fill(-m_originMomentumEst->Pz() /
-                                       m_originMomentumEst->P());
-    stats.originMomentumEstDyHist.Fill(m_originMomentumEst->Py() /
-                                       m_originMomentumEst->P());
-    stats.originMomentumEstDzHist.Fill(m_originMomentumEst->Px() /
-                                       m_originMomentumEst->P());
-
-    stats.originMomentumEstPhiHist.Fill(m_originMomentumEst->Phi());
-    stats.originMomentumEstThetaHist.Fill(m_originMomentumEst->Theta());
-
-    // Vertex
-    stats.vertexEstXYHist.Fill(-m_vertexEst->Z(), m_vertexEst->Y());
-    stats.vertexEstXHist.Fill(-m_vertexEst->Z());
-    stats.vertexEstYHist.Fill(m_vertexEst->Y());
     if (i % 10000 == 0) {
       std::cout << i << "/" << nEntries << "\n";
     }
   }
 
-  std::cout << "COLLECTING CLUSTER MATRIX DATA\n";
-  // Init cluster-specific hists
-  for (std::size_t shapeId : clusterShapeIds) {
-    std::string nameClusterMatrix = "ClusterMatrix" + std::to_string(shapeId);
-    stats.clusterMatricesHists.insert(
-        {shapeId,
-         TH2I(nameClusterMatrix.c_str(), nameClusterMatrix.c_str(),
-              opt.statsOpt.clusterSizeBins, opt.statsOpt.clusterSizeMin,
-              opt.statsOpt.clusterSizeMax, opt.statsOpt.clusterSizeBins,
-              opt.statsOpt.clusterSizeMin, opt.statsOpt.clusterSizeMax)});
-
-    std::string nameClusterMatrixLooResX =
-        "ClusterMatrixLooResX" + std::to_string(shapeId);
-    stats.clusterMatrixLooResXHists.insert(
-        {shapeId,
-         TH1D(nameClusterMatrixLooResX.c_str(),
-              nameClusterMatrixLooResX.c_str(), opt.statsOpt.looResidualsXBins,
-              opt.statsOpt.looResidualsXMin, opt.statsOpt.looResidualsXMax)});
-    std::string nameClusterMatrixLooResY =
-        "ClusterMatrixLooResY" + std::to_string(shapeId);
-    stats.clusterMatrixLooResYHists.insert(
-        {shapeId,
-         TH1D(nameClusterMatrixLooResY.c_str(),
-              nameClusterMatrixLooResY.c_str(), opt.statsOpt.looResidualsYBins,
-              opt.statsOpt.looResidualsYMin, opt.statsOpt.looResidualsYMax)});
-
-    std::string nameClusterMatrixLooErrorX =
-        "ClusterMatrixLooErrorX" + std::to_string(shapeId);
-    stats.clusterMatrixLooErrorXHists.insert(
-        {shapeId, TH1D(nameClusterMatrixLooErrorX.c_str(),
-                       nameClusterMatrixLooErrorX.c_str(),
-                       opt.statsOpt.trackHitsLooErrorBinsX,
-                       opt.statsOpt.trackHitsLooErrorMinX,
-                       opt.statsOpt.trackHitsLooErrorMaxX)});
-    std::string nameClusterMatrixLooErrorY =
-        "ClusterMatrixLooErrorY" + std::to_string(shapeId);
-    stats.clusterMatrixLooErrorYHists.insert(
-        {shapeId, TH1D(nameClusterMatrixLooErrorY.c_str(),
-                       nameClusterMatrixLooErrorY.c_str(),
-                       opt.statsOpt.trackHitsLooErrorBinsY,
-                       opt.statsOpt.trackHitsLooErrorMinY,
-                       opt.statsOpt.trackHitsLooErrorMaxY)});
-  }
-
-  std::cout << "STARTING CLUSTER MATRIX READING\n";
-  // m_trackTree->SetBranchStatus("*", false);
-  // m_trackTree->SetBranchStatus("geometryIds", true);
-  // m_trackTree->SetBranchStatus("leaveOneOutHitResiduals", true);
-  // m_trackTree->SetBranchStatus("leaveOneOutTrackStateCovs", true);
-  // m_trackTree->SetBranchStatus("trackHitCovs", true);
-  // m_trackTree->SetBranchStatus("trackHitClusterMatrices", true);
-  // m_trackTree->SetBranchStatus("trackHitClusterMatrixShapeIds", true);
-  for (std::size_t i = 0; i < nEntries; i++) {
-    m_trackTree->GetEntry(i);
-
-    // Counters and cut flow
-    if (clustersPerEvent.at(m_eventId) < opt.minOcc ||
-        clustersPerEvent.at(m_eventId) > opt.maxOcc) {
-      continue;
+  if (opt.plotUncertainty) {
+    std::cout << "COLLECTING CLUSTER MATRIX DATA\n";
+    for (std::size_t shapeId : stats.uncertainty.clusterShapeIds) {
+      stats.uncertainty.bookClusterShape(shapeId, opt.statsOpt);
     }
-    if (opt.requireEpicsParity && m_epicsParity != opt.epicsParity) {
-      continue;
-    }
-    if (m_xCount < opt.minXCount || m_xCount > opt.maxXCount) {
-      continue;
-    }
-    if (m_chi2Predicted < opt.minChi2Predicted ||
-        m_chi2Predicted > opt.maxChi2Predicted) {
-      continue;
-    }
-    if (m_chi2Filtered < opt.minChi2Filtered ||
-        m_chi2Filtered > opt.maxChi2Filtered) {
-      continue;
-    }
-    if (m_chi2Smoothed < opt.minChi2Smoothed ||
-        m_chi2Smoothed > opt.maxChi2Smoothed) {
-      continue;
-    }
-    if (m_vertexEst->Z() < opt.minVertexZ ||
-        m_vertexEst->Z() > opt.maxVertexZ) {
-      continue;
-    }
-    if (m_vertexEst->Y() < opt.minVertexY ||
-        m_vertexEst->Y() > opt.maxVertexY) {
-      continue;
-    }
-    if (m_originMomentumEst->Px() < opt.minMomentumX ||
-        m_originMomentumEst->Px() > opt.maxMomentumX) {
-      continue;
-    }
-
-    for (std::size_t j = 0; j < m_geometryIds->size(); j++) {
-      std::size_t geoId = m_geometryIds->at(j);
-
-      const auto &trackHitLocal = m_trackHitsLocal->at(j);
-      const auto &trackHitCov = m_trackHitCovs->at(j);
-      const auto &leaveOneOutTrackStateCov = m_leaveOneOutTrackStateCovs->at(j);
-
-      double looResErrorX =
-          stats.leaveOneOutResidualsXHists.at(geoId).GetStdDev();
-      double looResErrorY =
-          stats.leaveOneOutResidualsYHists.at(geoId).GetStdDev();
-
-      double looTrackHitErrorX = std::sqrt(looResErrorX * looResErrorX -
-                                           leaveOneOutTrackStateCov(0, 0));
-      double looTrackHitErrorY = std::sqrt(looResErrorY * looResErrorY -
-                                           leaveOneOutTrackStateCov(1, 1));
-
-      // Leave one out track hit errors
-      stats.leaveOneOutTrackHitsErrorXHists.at(geoId).Fill(looTrackHitErrorX);
-      stats.leaveOneOutTrackHitsErrorYHists.at(geoId).Fill(looTrackHitErrorY);
-      stats.leaveOneOutTrackHitsErrorXYHists.at(geoId).Fill(looTrackHitErrorX,
-                                                            looTrackHitErrorY);
-
-      stats.looTrackHitsErrorModelTrackHitsErrorXHists.at(geoId).Fill(
-          looTrackHitErrorX, std::sqrt(trackHitCov(0, 0)));
-      stats.looTrackHitsErrorModelTrackHitsErrorYHists.at(geoId).Fill(
-          looTrackHitErrorY, std::sqrt(trackHitCov(1, 1)));
-      stats.looTrackHitsErrorXTrackHitsLocalXHists.at(geoId).Fill(
-          looTrackHitErrorX, trackHitLocal.X());
-
-      if (geoId == 14) {
-        // Cluster shape
-        std::size_t shapeId = m_trackHitClusterMatrixShapeIds->at(j);
-        const TMatrixD &clusterMatrix = m_trackHitClusterMatrices->at(j);
-
-        stats.clusterMatrixLooResXHists.at(shapeId).Fill(
-            m_leaveOneOutHitResiduals->at(j).X());
-        stats.clusterMatrixLooResYHists.at(shapeId).Fill(
-            m_leaveOneOutHitResiduals->at(j).Y());
-
-        stats.clusterMatrixLooErrorXHists.at(shapeId).Fill(looTrackHitErrorX);
-        stats.clusterMatrixLooErrorYHists.at(shapeId).Fill(looTrackHitErrorY);
-
-        for (std::size_t n = 0; n < clusterMatrix.GetNrows(); n++) {
-          for (std::size_t m = 0; m < clusterMatrix.GetNcols(); m++) {
-            double x = m + 0.5;
-            double y = 4 - n - 0.5;
-            std::size_t bin =
-                stats.clusterMatricesHists.at(shapeId).FindBin(x, y);
-
-            stats.clusterMatricesHists.at(shapeId).SetBinContent(
-                bin, clusterMatrix(n, m));
-          }
-        }
-      }
-    }
+    stats.uncertainty.finalize(clusterShapeGeoId);
   }
 
   for (const auto &[id, nTracks] : tracksPerEvent) {
-    stats.nTracksHist.Fill(nTracks);
-    stats.nTracksNClustersHist.Fill(clustersPerEvent.at(id), nTracks);
+    stats.core.nTracksHist.Fill(nTracks);
+    stats.core.nTracksNClustersHist.Fill(clustersPerEvent.at(id), nTracks);
   }
 
-  stats.cutFlowHist.Fill("nTotal",
-                         static_cast<double>(stats.nTotal) / opt.nBXs);
-  stats.cutFlowHist.Fill(
-      "nPassedOccupancy",
-      static_cast<double>(stats.nPassedOccupancy) / opt.nBXs);
-  stats.cutFlowHist.Fill("nPassedParity",
-                         static_cast<double>(stats.nPassedParity) / opt.nBXs);
-  stats.cutFlowHist.Fill("nPassedXCount",
-                         static_cast<double>(stats.nPassedXCount) / opt.nBXs);
-  stats.cutFlowHist.Fill(
-      "nPassedChi2Predicted",
-      static_cast<double>(stats.nPassedChi2Predicted) / opt.nBXs);
-  stats.cutFlowHist.Fill(
-      "nPassedChi2Filtered",
-      static_cast<double>(stats.nPassedChi2Filtered) / opt.nBXs);
-  stats.cutFlowHist.Fill(
-      "nPassedChi2Smoothed",
-      static_cast<double>(stats.nPassedChi2Smoothed) / opt.nBXs);
-  stats.cutFlowHist.Fill("nPassedVertexZ",
-                         static_cast<double>(stats.nPassedVertexZ) / opt.nBXs);
-  stats.cutFlowHist.Fill("nPassedVertexY",
-                         static_cast<double>(stats.nPassedVertexY) / opt.nBXs);
-  stats.cutFlowHist.Fill(
-      "nPassedMomentumZ",
-      static_cast<double>(stats.nPassedMomentumZ) / opt.nBXs);
-  stats.cutFlowHist.Fill(
-      "nPassedResiduals",
-      static_cast<double>(stats.nPassedResiduals) / opt.nBXs);
+  auto &cutFlowHist = stats.core.cutFlowHist;
+  cutFlowHist.Fill("nTotal", static_cast<double>(stats.nTotal) / opt.nBXs);
+  cutFlowHist.Fill("nPassedOccupancy",
+                   static_cast<double>(stats.nPassedOccupancy) / opt.nBXs);
+  cutFlowHist.Fill("nPassedParity",
+                   static_cast<double>(stats.nPassedParity) / opt.nBXs);
+  cutFlowHist.Fill("nPassedXCount",
+                   static_cast<double>(stats.nPassedXCount) / opt.nBXs);
+  cutFlowHist.Fill("nPassedChi2Predicted",
+                   static_cast<double>(stats.nPassedChi2Predicted) / opt.nBXs);
+  cutFlowHist.Fill("nPassedChi2Filtered",
+                   static_cast<double>(stats.nPassedChi2Filtered) / opt.nBXs);
+  cutFlowHist.Fill("nPassedChi2Smoothed",
+                   static_cast<double>(stats.nPassedChi2Smoothed) / opt.nBXs);
+  cutFlowHist.Fill("nPassedVertexZ",
+                   static_cast<double>(stats.nPassedVertexZ) / opt.nBXs);
+  cutFlowHist.Fill("nPassedVertexY",
+                   static_cast<double>(stats.nPassedVertexY) / opt.nBXs);
+  cutFlowHist.Fill("nPassedMomentumZ",
+                   static_cast<double>(stats.nPassedMomentumZ) / opt.nBXs);
+  cutFlowHist.Fill("nPassedResiduals",
+                   static_cast<double>(stats.nPassedResiduals) / opt.nBXs);
 
   // Normalize
-  stats.xCountHist.Scale(1.0 / opt.nBXs);
-  stats.magnetConfHist.Scale(1.0 / opt.nBXs);
-
-  stats.nTracksHist.Scale(1.0 / opt.nBXs);
-  stats.nTracksNClustersHist.Scale(1.0 / opt.nBXs);
-
-  stats.chi2PredictedHist.Scale(1.0 / opt.nBXs);
-  stats.chi2FilteredHist.Scale(1.0 / opt.nBXs);
-  stats.chi2SmoothedHist.Scale(1.0 / opt.nBXs);
-
-  stats.predictedResidualsXCumulativeHist.Scale(
-      1.0 / stats.predictedResidualsXCumulativeHist.Integral(), "width");
-  stats.filteredResidualsXCumulativeHist.Scale(
-      1.0 / stats.filteredResidualsXCumulativeHist.Integral(), "width");
-  stats.smoothedResidualsXCumulativeHist.Scale(
-      1.0 / stats.smoothedResidualsXCumulativeHist.Integral(), "width");
-
-  stats.predictedResidualsYCumulativeHist.Scale(
-      1.0 / stats.predictedResidualsYCumulativeHist.Integral(), "width");
-  stats.filteredResidualsYCumulativeHist.Scale(
-      1.0 / stats.filteredResidualsYCumulativeHist.Integral(), "width");
-  stats.smoothedResidualsYCumulativeHist.Scale(
-      1.0 / stats.smoothedResidualsYCumulativeHist.Integral(), "width");
-
-  stats.predictedPullsXCumulativeHist.Scale(
-      1.0 / stats.predictedPullsXCumulativeHist.Integral(), "width");
-  stats.filteredPullsXCumulativeHist.Scale(
-      1.0 / stats.filteredPullsXCumulativeHist.Integral(), "width");
-  stats.smoothedPullsXCumulativeHist.Scale(
-      1.0 / stats.smoothedPullsXCumulativeHist.Integral(), "width");
-
-  stats.predictedPullsYCumulativeHist.Scale(
-      1.0 / stats.predictedPullsYCumulativeHist.Integral(), "width");
-  stats.filteredPullsYCumulativeHist.Scale(
-      1.0 / stats.filteredPullsYCumulativeHist.Integral(), "width");
-  stats.smoothedPullsYCumulativeHist.Scale(
-      1.0 / stats.smoothedPullsYCumulativeHist.Integral(), "width");
-
-  for (std::size_t geoId : opt.statsOpt.chipIds) {
-    stats.nClustersHist.at(geoId).Scale(1.0 / opt.nBXs);
-
-    stats.trackHitsLocalHists.at(geoId).Scale(1.0 / opt.nBXs);
-    stats.trackHitsErrorXHists.at(geoId).Scale(1.0 / opt.nBXs);
-    stats.trackHitsErrorYHists.at(geoId).Scale(1.0 / opt.nBXs);
-    stats.trackHitsErrorXYHists.at(geoId).Scale(1.0 / opt.nBXs);
-
-    stats.leaveOneOutTrackHitsErrorXHists.at(geoId).Scale(1.0 / opt.nBXs);
-    stats.leaveOneOutTrackHitsErrorYHists.at(geoId).Scale(1.0 / opt.nBXs);
-    stats.leaveOneOutTrackHitsErrorXYHists.at(geoId).Scale(1.0 / opt.nBXs);
-
-    stats.looTrackHitsErrorModelTrackHitsErrorXHists.at(geoId).Scale(1.0 /
-                                                                     opt.nBXs);
-    stats.looTrackHitsErrorModelTrackHitsErrorYHists.at(geoId).Scale(1.0 /
-                                                                     opt.nBXs);
-
-    stats.looTrackHitsErrorXTrackHitsLocalXHists.at(geoId).Scale(1.0 /
-                                                                 opt.nBXs);
-
-    stats.filteredResidualsXYHists.at(geoId).Scale(1.0 / opt.nBXs);
-    stats.smoothedResidualsXYHists.at(geoId).Scale(1.0 / opt.nBXs);
-    stats.leaveOneOutResidualsXYHists.at(geoId).Scale(1.0 / opt.nBXs);
-
-    stats.predictedResidualsXHists.at(geoId).Scale(
-        1.0 / stats.predictedResidualsXHists.at(geoId).Integral(), "width");
-    stats.filteredResidualsXHists.at(geoId).Scale(
-        1.0 / stats.filteredResidualsXHists.at(geoId).Integral(), "width");
-    stats.smoothedResidualsXHists.at(geoId).Scale(
-        1.0 / stats.smoothedResidualsXHists.at(geoId).Integral(), "width");
-    stats.leaveOneOutResidualsXHists.at(geoId).Scale(
-        1.0 / stats.leaveOneOutResidualsXHists.at(geoId).Integral(), "width");
-
-    stats.predictedResidualsYHists.at(geoId).Scale(
-        1.0 / stats.predictedResidualsYHists.at(geoId).Integral(), "width");
-    stats.filteredResidualsYHists.at(geoId).Scale(
-        1.0 / stats.filteredResidualsYHists.at(geoId).Integral(), "width");
-    stats.smoothedResidualsYHists.at(geoId).Scale(
-        1.0 / stats.smoothedResidualsYHists.at(geoId).Integral(), "width");
-    stats.leaveOneOutResidualsYHists.at(geoId).Scale(
-        1.0 / stats.leaveOneOutResidualsYHists.at(geoId).Integral(), "width");
-
-    stats.predictedPullsXHists.at(geoId).Scale(
-        1.0 / stats.predictedPullsXHists.at(geoId).Integral(), "width");
-    stats.filteredPullsXHists.at(geoId).Scale(
-        1.0 / stats.filteredPullsXHists.at(geoId).Integral(), "width");
-    stats.smoothedPullsXHists.at(geoId).Scale(
-        1.0 / stats.smoothedPullsXHists.at(geoId).Integral(), "width");
-    stats.leaveOneOutPullsXHists.at(geoId).Scale(
-        1.0 / stats.leaveOneOutPullsXHists.at(geoId).Integral(), "width");
-
-    stats.predictedPullsYHists.at(geoId).Scale(
-        1.0 / stats.predictedPullsYHists.at(geoId).Integral(), "width");
-    stats.filteredPullsYHists.at(geoId).Scale(
-        1.0 / stats.filteredPullsYHists.at(geoId).Integral(), "width");
-    stats.smoothedPullsYHists.at(geoId).Scale(
-        1.0 / stats.smoothedPullsYHists.at(geoId).Integral(), "width");
-    stats.leaveOneOutPullsYHists.at(geoId).Scale(
-        1.0 / stats.leaveOneOutPullsYHists.at(geoId).Integral(), "width");
-
-    stats.smoothedResidualsXTrackHitsLocalXHists.at(geoId).Scale(1.0 /
-                                                                 opt.nBXs);
-    stats.smoothedResidualsXTrackHitsLocalYHists.at(geoId).Scale(1.0 /
-                                                                 opt.nBXs);
-    stats.smoothedResidualsYTrackHitsLocalXHists.at(geoId).Scale(1.0 /
-                                                                 opt.nBXs);
-    stats.smoothedResidualsYTrackHitsLocalYHists.at(geoId).Scale(1.0 /
-                                                                 opt.nBXs);
-    stats.smoothedResidualsXTrackHitsLocalPhiHists.at(geoId).Scale(1.0 /
-                                                                   opt.nBXs);
-    stats.smoothedResidualsYTrackHitsLocalPhiHists.at(geoId).Scale(1.0 /
-                                                                   opt.nBXs);
-    stats.smoothedResidualsXTrackHitsErrorXHists.at(geoId).Scale(1.0 /
-                                                                 opt.nBXs);
-    stats.smoothedResidualsYTrackHitsErrorYHists.at(geoId).Scale(1.0 /
-                                                                 opt.nBXs);
-
-    stats.smoothedResidualsXVertexEstXHists.at(geoId).Scale(1.0 / opt.nBXs);
-    stats.smoothedResidualsXVertexEstYHists.at(geoId).Scale(1.0 / opt.nBXs);
-    stats.smoothedResidualsYVertexEstXHists.at(geoId).Scale(1.0 / opt.nBXs);
-    stats.smoothedResidualsYVertexEstYHists.at(geoId).Scale(1.0 / opt.nBXs);
-
-    stats.smoothedResidualsXOriginMomentumEstPyHists.at(geoId).Scale(1.0 /
-                                                                     opt.nBXs);
-    stats.smoothedResidualsYOriginMomentumEstPyHists.at(geoId).Scale(1.0 /
-                                                                     opt.nBXs);
-
-    stats.smoothedPullsXTrackHitsLocalXHists.at(geoId).Scale(1.0 / opt.nBXs);
-    stats.smoothedPullsXTrackHitsLocalYHists.at(geoId).Scale(1.0 / opt.nBXs);
-    stats.smoothedPullsYTrackHitsLocalXHists.at(geoId).Scale(1.0 / opt.nBXs);
-    stats.smoothedPullsYTrackHitsLocalYHists.at(geoId).Scale(1.0 / opt.nBXs);
-  }
-  for (auto &[id, hist] : stats.trackHitsLocalXXHists) {
-    hist.Scale(1.0 / opt.nBXs);
-  }
-  for (auto &[id, hist] : stats.trackHitsLocalYYHists) {
-    hist.Scale(1.0 / opt.nBXs);
-  }
-  for (auto &[id, hist] : stats.smoothedResidualsXXHists) {
-    hist.Scale(1.0 / opt.nBXs);
-  }
-  for (auto &[id, hist] : stats.smoothedResidualsYYHists) {
-    hist.Scale(1.0 / opt.nBXs);
-  }
-
-  stats.originMomentumEstPxHist.Scale(1.0 / opt.nBXs);
-  stats.originMomentumEstPyHist.Scale(1.0 / opt.nBXs);
-  stats.originMomentumEstPzHist.Scale(1.0 / opt.nBXs);
-
-  stats.originMomentumEstDxHist.Scale(1.0 / opt.nBXs);
-  stats.originMomentumEstDyHist.Scale(1.0 / opt.nBXs);
-  stats.originMomentumEstDzHist.Scale(1.0 / opt.nBXs);
-
-  stats.originMomentumEstPhiHist.Scale(1.0 / opt.nBXs);
-  stats.originMomentumEstThetaHist.Scale(1.0 / opt.nBXs);
-
-  stats.vertexEstXYHist.Scale(1.0 / opt.nBXs);
-  stats.vertexEstXHist.Scale(1.0 / opt.nBXs);
-  stats.vertexEstYHist.Scale(1.0 / opt.nBXs);
+  stats.normalize(opt.nBXs);
 
   // Print stats
   auto [probErrLeft, probErrRight] = getBinomialErrors(
@@ -989,11 +545,330 @@ void RootTrackAnalyzer::process(const Options &opt) {
   stats.print();
 }
 
+void RootTrackAnalyzer::fillCore(
+    Stats &stats,
+    const std::unordered_map<std::size_t, std::size_t> &clustersPerChip) {
+  auto &core = stats.core;
+
+  core.xCountHist.Fill(m_xCount);
+
+  core.magnetConfHist.Fill(m_dipoleStrength, m_xCorrectorStrength);
+
+  // Chi2
+  core.chi2PredictedHist.Fill(m_chi2Predicted);
+  core.chi2FilteredHist.Fill(m_chi2Filtered);
+  core.chi2SmoothedHist.Fill(m_chi2Smoothed);
+
+  /// Chi2 functions
+  core.chi2SmoothedXCountHist.Fill(m_chi2Smoothed, m_xCount);
+
+  for (std::size_t j = 0; j < m_smoothedHitPulls->size(); j++) {
+    std::size_t geoId = m_geometryIds->at(j);
+
+    core.nClustersHist.at(geoId).Fill(clustersPerChip.at(geoId));
+
+    // Residuals
+    const auto &predictedRes = m_predictedHitResiduals->at(j);
+    const auto &filteredRes = m_filteredHitResiduals->at(j);
+    const auto &smoothedRes = m_smoothedHitResiduals->at(j);
+
+    core.predictedResidualsXCumulativeHist.Fill(predictedRes.X());
+    core.filteredResidualsXCumulativeHist.Fill(filteredRes.X());
+    core.smoothedResidualsXCumulativeHist.Fill(smoothedRes.X());
+
+    core.predictedResidualsYCumulativeHist.Fill(predictedRes.Y());
+    core.filteredResidualsYCumulativeHist.Fill(filteredRes.Y());
+    core.smoothedResidualsYCumulativeHist.Fill(smoothedRes.Y());
+
+    core.filteredResidualsXYHists.at(geoId).Fill(filteredRes.X(),
+                                                 filteredRes.Y());
+    core.smoothedResidualsXYHists.at(geoId).Fill(smoothedRes.X(),
+                                                 smoothedRes.Y());
+
+    core.predictedResidualsXHists.at(geoId).Fill(predictedRes.X());
+    core.filteredResidualsXHists.at(geoId).Fill(filteredRes.X());
+    core.smoothedResidualsXHists.at(geoId).Fill(smoothedRes.X());
+
+    core.predictedResidualsYHists.at(geoId).Fill(predictedRes.Y());
+    core.filteredResidualsYHists.at(geoId).Fill(filteredRes.Y());
+    core.smoothedResidualsYHists.at(geoId).Fill(smoothedRes.Y());
+
+    // Pulls
+    const auto &predictedPull = m_predictedHitPulls->at(j);
+    const auto &filteredPull = m_filteredHitPulls->at(j);
+    const auto &smoothedPull = m_smoothedHitPulls->at(j);
+
+    core.predictedPullsXCumulativeHist.Fill(predictedPull.X());
+    core.filteredPullsXCumulativeHist.Fill(filteredPull.X());
+    core.smoothedPullsXCumulativeHist.Fill(smoothedPull.X());
+
+    core.predictedPullsYCumulativeHist.Fill(predictedPull.Y());
+    core.filteredPullsYCumulativeHist.Fill(filteredPull.Y());
+    core.smoothedPullsYCumulativeHist.Fill(smoothedPull.Y());
+
+    core.predictedPullsXHists.at(geoId).Fill(predictedPull.X());
+    core.filteredPullsXHists.at(geoId).Fill(filteredPull.X());
+    core.smoothedPullsXHists.at(geoId).Fill(smoothedPull.X());
+
+    core.predictedPullsYHists.at(geoId).Fill(predictedPull.Y());
+    core.filteredPullsYHists.at(geoId).Fill(filteredPull.Y());
+    core.smoothedPullsYHists.at(geoId).Fill(smoothedPull.Y());
+
+    // Local track hits
+    const auto &trackHitLocal = m_trackHitsLocal->at(j);
+    core.trackHitsLocalHists.at(geoId).Fill(trackHitLocal.X(),
+                                            trackHitLocal.Y());
+
+    // Track residuals vs track hit parameters
+    auto &rxhxHist = core.smoothedResidualsXTrackHitsLocalXHists.at(geoId);
+    auto &rxhyHist = core.smoothedResidualsXTrackHitsLocalYHists.at(geoId);
+    auto &rxhphiHist = core.smoothedResidualsXTrackHitsLocalPhiHists.at(geoId);
+    auto &ryhxHist = core.smoothedResidualsYTrackHitsLocalXHists.at(geoId);
+    auto &ryhyHist = core.smoothedResidualsYTrackHitsLocalYHists.at(geoId);
+    auto &ryhphiHist = core.smoothedResidualsYTrackHitsLocalPhiHists.at(geoId);
+
+    rxhxHist.Fill(trackHitLocal.X(), smoothedRes.X());
+    rxhyHist.Fill(trackHitLocal.Y(), smoothedRes.X());
+    rxhphiHist.Fill(std::atan(trackHitLocal.Y() / trackHitLocal.X()),
+                    smoothedRes.X());
+    ryhxHist.Fill(trackHitLocal.X(), smoothedRes.Y());
+    ryhyHist.Fill(trackHitLocal.Y(), smoothedRes.Y());
+    ryhphiHist.Fill(std::atan(trackHitLocal.Y() / trackHitLocal.X()),
+                    smoothedRes.Y());
+
+    // Track residuals vs track parameters
+    auto &rxvxHist = core.smoothedResidualsXVertexEstXHists.at(geoId);
+    auto &rxvyHist = core.smoothedResidualsXVertexEstYHists.at(geoId);
+    auto &ryvxHist = core.smoothedResidualsYVertexEstXHists.at(geoId);
+    auto &ryvyHist = core.smoothedResidualsYVertexEstYHists.at(geoId);
+
+    auto &rxpyHist = core.smoothedResidualsXOriginMomentumEstPyHists.at(geoId);
+    auto &rypyHist = core.smoothedResidualsYOriginMomentumEstPyHists.at(geoId);
+
+    rxvxHist.Fill(-m_vertexEst->Z(), smoothedRes.X());
+    rxvyHist.Fill(m_vertexEst->Y(), smoothedRes.X());
+    ryvxHist.Fill(-m_vertexEst->Z(), smoothedRes.Y());
+    ryvyHist.Fill(m_vertexEst->Y(), smoothedRes.Y());
+
+    rxpyHist.Fill(m_originMomentumEst->Py(), smoothedRes.X());
+    rypyHist.Fill(m_originMomentumEst->Py(), smoothedRes.Y());
+
+    // Track pulls vs track hit parameters
+    auto &pxhxHist = core.smoothedPullsXTrackHitsLocalXHists.at(geoId);
+    auto &pxhyHist = core.smoothedPullsXTrackHitsLocalYHists.at(geoId);
+    auto &pyhxHist = core.smoothedPullsYTrackHitsLocalXHists.at(geoId);
+    auto &pyhyHist = core.smoothedPullsYTrackHitsLocalYHists.at(geoId);
+
+    pxhxHist.Fill(trackHitLocal.X(), smoothedPull.X());
+    pxhyHist.Fill(trackHitLocal.Y(), smoothedPull.X());
+    pyhxHist.Fill(trackHitLocal.X(), smoothedPull.Y());
+    pyhyHist.Fill(trackHitLocal.Y(), smoothedPull.Y());
+  }
+
+  // Momentum
+  core.originMomentumEstPxHist.Fill(-m_originMomentumEst->Pz());
+  core.originMomentumEstPyHist.Fill(m_originMomentumEst->Py());
+  core.originMomentumEstPzHist.Fill(m_originMomentumEst->Px());
+
+  // Momentum direction
+  core.originMomentumEstDxHist.Fill(-m_originMomentumEst->Pz() /
+                                    m_originMomentumEst->P());
+  core.originMomentumEstDyHist.Fill(m_originMomentumEst->Py() /
+                                    m_originMomentumEst->P());
+  core.originMomentumEstDzHist.Fill(m_originMomentumEst->Px() /
+                                    m_originMomentumEst->P());
+
+  core.originMomentumEstPhiHist.Fill(m_originMomentumEst->Phi());
+  core.originMomentumEstThetaHist.Fill(m_originMomentumEst->Theta());
+
+  // Vertex
+  core.vertexEstXYHist.Fill(-m_vertexEst->Z(), m_vertexEst->Y());
+  core.vertexEstXHist.Fill(-m_vertexEst->Z());
+  core.vertexEstYHist.Fill(m_vertexEst->Y());
+}
+
+void RootTrackAnalyzer::fillLeaveOneOut(Stats &stats) {
+  auto &loo = stats.leaveOneOut;
+  for (std::size_t j = 0; j < m_leaveOneOutHitResiduals->size(); j++) {
+    std::size_t geoId = m_geometryIds->at(j);
+
+    // Residuals
+    const auto &leaveOneOutRes = m_leaveOneOutHitResiduals->at(j);
+    loo.leaveOneOutResidualsXYHists.at(geoId).Fill(leaveOneOutRes.X(),
+                                                   leaveOneOutRes.Y());
+    loo.leaveOneOutResidualsXHists.at(geoId).Fill(leaveOneOutRes.X());
+    loo.leaveOneOutResidualsYHists.at(geoId).Fill(leaveOneOutRes.Y());
+
+    // Pulls
+    const auto &leaveOneOutPull = m_leaveOneOutHitPulls->at(j);
+    loo.leaveOneOutPullsXHists.at(geoId).Fill(leaveOneOutPull.X());
+    loo.leaveOneOutPullsYHists.at(geoId).Fill(leaveOneOutPull.Y());
+  }
+}
+
+void RootTrackAnalyzer::fillUncertainty(Stats &stats,
+                                        std::size_t clusterShapeGeoId) {
+  auto &unc = stats.uncertainty;
+  for (std::size_t j = 0; j < m_geometryIds->size(); j++) {
+    std::size_t geoId = m_geometryIds->at(j);
+
+    std::size_t shapeId = m_trackHitClusterMatrixShapeIds->at(j);
+    unc.clusterShapeIds.insert(shapeId);
+
+    // Track hits errors
+    const auto &trackHitCov = m_trackHitCovs->at(j);
+    double hitErrorX = std::sqrt(trackHitCov(0, 0));
+    double hitErrorY = std::sqrt(trackHitCov(1, 1));
+    unc.trackHitsErrorXHists.at(geoId).Fill(hitErrorX);
+    unc.trackHitsErrorYHists.at(geoId).Fill(hitErrorY);
+    unc.trackHitsErrorXYHists.at(geoId).Fill(hitErrorX, hitErrorY);
+
+    // Track residuals vs track hit errors
+    const auto &smoothedRes = m_smoothedHitResiduals->at(j);
+    unc.smoothedResidualsXTrackHitsErrorXHists.at(geoId).Fill(hitErrorX,
+                                                              smoothedRes.X());
+    unc.smoothedResidualsYTrackHitsErrorYHists.at(geoId).Fill(hitErrorY,
+                                                              smoothedRes.Y());
+
+    // Leave-one-out residuals moments
+    const auto &leaveOneOutRes = m_leaveOneOutHitResiduals->at(j);
+    unc.looResMomentsX[geoId].add(leaveOneOutRes.X());
+    unc.looResMomentsY[geoId].add(leaveOneOutRes.Y());
+
+    // Track hit quantities for the leave-one-out hit errors
+    const auto &leaveOneOutTrackStateCov = m_leaveOneOutTrackStateCovs->at(j);
+    Stats::Uncertainty::HitRecord record;
+    record.geoId = geoId;
+    record.shapeId = shapeId;
+    record.hitLocalX = m_trackHitsLocal->at(j).X();
+    record.hitVarX = trackHitCov(0, 0);
+    record.hitVarY = trackHitCov(1, 1);
+    record.looStateVarX = leaveOneOutTrackStateCov(0, 0);
+    record.looStateVarY = leaveOneOutTrackStateCov(1, 1);
+    record.looResX = leaveOneOutRes.X();
+    record.looResY = leaveOneOutRes.Y();
+    unc.hitRecords.push_back(record);
+
+    // Cluster shape
+    if (geoId == clusterShapeGeoId) {
+      unc.clusterMatrices.erase(shapeId);
+      unc.clusterMatrices.emplace(shapeId, m_trackHitClusterMatrices->at(j));
+    }
+  }
+}
+
+void RootTrackAnalyzer::fillCorrelations(Stats &stats) {
+  auto &corr = stats.correlations;
+
+  std::unordered_map<std::size_t, double> hitXX;
+  std::unordered_map<std::size_t, double> hitYY;
+
+  std::unordered_map<std::size_t, double> resXX;
+  std::unordered_map<std::size_t, double> resYY;
+  for (std::size_t j = 0; j < m_geometryIds->size(); j++) {
+    std::size_t geoId = m_geometryIds->at(j);
+    hitXX[geoId] = m_trackHitsLocal->at(j).X();
+    hitYY[geoId] = m_trackHitsLocal->at(j).Y();
+    resXX[geoId] = m_smoothedHitResiduals->at(j).X();
+    resYY[geoId] = m_smoothedHitResiduals->at(j).Y();
+  }
+
+  std::vector<std::size_t> chipIds_(stats.chipIds.begin(), stats.chipIds.end());
+  std::sort(chipIds_.begin(), chipIds_.end());
+  for (std::size_t n = 0; n < chipIds_.size() - 1; n++) {
+    std::size_t idN = chipIds_.at(n);
+    if (!hitXX.contains(idN)) {
+      continue;
+    }
+    for (std::size_t m = n + 1; m < chipIds_.size(); m++) {
+      std::size_t idM = chipIds_.at(m);
+      if (!hitXX.contains(idM)) {
+        continue;
+      }
+
+      corr.trackHitsLocalXXHists.at(idN * 100 + idM)
+          .Fill(hitXX.at(idN), hitXX.at(idM));
+      corr.trackHitsLocalYYHists.at(idN * 100 + idM)
+          .Fill(hitYY.at(idN), hitYY.at(idM));
+
+      corr.smoothedResidualsXXHists.at(idN * 100 + idM)
+          .Fill(resXX.at(idN), resXX.at(idM));
+      corr.smoothedResidualsYYHists.at(idN * 100 + idM)
+          .Fill(resYY.at(idN), resYY.at(idM));
+    }
+  }
+}
+
+void RootTrackAnalyzer::Stats::Uncertainty::RunningMoments::add(double x) {
+  n++;
+  double delta = x - mean;
+  mean += delta / n;
+  m2 += delta * (x - mean);
+}
+
+double RootTrackAnalyzer::Stats::Uncertainty::RunningMoments::variance() const {
+  return (n > 0) ? m2 / n : 0;
+}
+
 void RootTrackAnalyzer::Stats::init(const std::string &pfix,
                                     const Options &opt) {
   prefix = pfix;
   chipIds = opt.chipIds;
+  this->opt = opt;
 
+  core.init(prefix, opt);
+  if (leaveOneOutEnabled) {
+    leaveOneOut.init(prefix, opt);
+  }
+  if (uncertaintyEnabled) {
+    uncertainty.init(prefix, opt);
+  }
+  if (correlationsEnabled) {
+    correlations.init(prefix, opt);
+  }
+}
+
+void RootTrackAnalyzer::Stats::normalize(std::size_t nBXs) {
+  core.normalize(nBXs, opt);
+  if (leaveOneOutEnabled) {
+    leaveOneOut.normalize(nBXs, opt);
+  }
+  if (uncertaintyEnabled) {
+    uncertainty.normalize(nBXs, opt);
+  }
+  if (correlationsEnabled) {
+    correlations.normalize(nBXs);
+  }
+}
+
+void RootTrackAnalyzer::Stats::reset() {}
+
+void RootTrackAnalyzer::Stats::print() {
+  TCanvas c = TCanvas(prefix.c_str(), "", 800, 800);
+  TH1D dummy("dummy", "dummy", 100, 0, 100);
+
+  std::string cOptionFirst = prefix + ".pdf(";
+  std::string cOptionLast = prefix + ".pdf)";
+  std::string cOption = prefix + ".pdf";
+
+  core.print(c, cOptionFirst, cOption, opt);
+  if (leaveOneOutEnabled) {
+    leaveOneOut.print(c, cOption, opt);
+  }
+  if (uncertaintyEnabled) {
+    uncertainty.print(c, cOption, opt);
+  }
+  if (correlationsEnabled) {
+    correlations.print(c, cOption, opt, dummy);
+  }
+
+  // Dummy
+  HistPainterConfig dummyCfg;
+  saveHist(c, cOptionLast, {dummy, dummyCfg});
+}
+
+void RootTrackAnalyzer::Stats::Core::init(const std::string &prefix,
+                                          const Options &opt) {
   // Counters
   std::string nameCutFlow = prefix + "CutFlow";
   cutFlowHist = TH1D(nameCutFlow.c_str(), nameCutFlow.c_str(), 6, 0, 6);
@@ -1022,7 +897,7 @@ void RootTrackAnalyzer::Stats::init(const std::string &pfix,
                         opt.xCorrectorStrengthMin, opt.xCorrectorStrengthMax);
 
   // Number of tracks/BX vs number of clusters/BX
-  for (int id : chipIds) {
+  for (int id : opt.chipIds) {
     std::string nameNClusters = prefix + "NClusters" + std::to_string(id);
     nClustersHist.insert(
         {id, TH1D(nameNClusters.c_str(), nameNClusters.c_str(),
@@ -1059,7 +934,7 @@ void RootTrackAnalyzer::Stats::init(const std::string &pfix,
            opt.chi2Max, opt.xCountBins, opt.xCountMin, opt.xCountMax);
 
   // Local track hits
-  for (int id : chipIds) {
+  for (int id : opt.chipIds) {
     std::string nameTrackHitsLocal =
         prefix + "TrackHitsLocal" + std::to_string(id);
     trackHitsLocalHists.insert(
@@ -1067,109 +942,6 @@ void RootTrackAnalyzer::Stats::init(const std::string &pfix,
                   opt.trackHitsLocalBinsX, opt.trackHitsLocalMinX,
                   opt.trackHitsLocalMaxX, opt.trackHitsLocalBinsY,
                   opt.trackHitsLocalMinY, opt.trackHitsLocalMaxY)});
-  }
-  std::vector<std::size_t> chipIds_(chipIds.begin(), chipIds.end());
-  std::sort(chipIds_.begin(), chipIds_.end());
-  for (std::size_t n = 0; n < chipIds_.size() - 1; n++) {
-    std::size_t idN = chipIds_.at(n);
-    for (std::size_t m = n + 1; m < chipIds_.size(); m++) {
-      auto mit = chipIds_.begin();
-      std::advance(mit, m);
-      std::size_t idM = chipIds_.at(m);
-
-      std::string nameTrackHitsLocalXXHists = prefix + "TrackHitsLocalXX" +
-                                              std::to_string(idN) +
-                                              std::to_string(idM);
-      trackHitsLocalXXHists.insert(
-          {idN * 100 + idM,
-           TH2D(nameTrackHitsLocalXXHists.c_str(),
-                nameTrackHitsLocalXXHists.c_str(), opt.trackHitsLocalBinsX,
-                opt.trackHitsLocalMinX, opt.trackHitsLocalMaxX,
-                opt.trackHitsLocalBinsX, opt.trackHitsLocalMinX,
-                opt.trackHitsLocalMaxX)});
-      std::string nameTrackHitsLocalYYHists = prefix + "TrackHitsLocalYY" +
-                                              std::to_string(idN) +
-                                              std::to_string(idM);
-      trackHitsLocalYYHists.insert(
-          {idN * 100 + idM,
-           TH2D(nameTrackHitsLocalYYHists.c_str(),
-                nameTrackHitsLocalYYHists.c_str(), opt.trackHitsLocalBinsY,
-                opt.trackHitsLocalMinY, opt.trackHitsLocalMaxY,
-                opt.trackHitsLocalBinsY, opt.trackHitsLocalMinY,
-                opt.trackHitsLocalMaxY)});
-    }
-  }
-
-  // Track hits errors
-  for (int id : chipIds) {
-    std::string nameTrackHitsErrorX =
-        prefix + "TrackHitsErrorX" + std::to_string(id);
-    trackHitsErrorXHists.insert(
-        {id, TH1D(nameTrackHitsErrorX.c_str(), nameTrackHitsErrorX.c_str(),
-                  opt.trackHitsErrorBinsX, opt.trackHitsErrorMinX,
-                  opt.trackHitsErrorMaxX)});
-    std::string nameTrackHitsErrorY =
-        prefix + "TrackHitsErrorY" + std::to_string(id);
-    trackHitsErrorYHists.insert(
-        {id, TH1D(nameTrackHitsErrorY.c_str(), nameTrackHitsErrorY.c_str(),
-                  opt.trackHitsErrorBinsY, opt.trackHitsErrorMinY,
-                  opt.trackHitsErrorMaxY)});
-    std::string nameTrackHitsErrorXY =
-        prefix + "TrackHitsErrorXY" + std::to_string(id);
-    trackHitsErrorXYHists.insert(
-        {id, TH2D(nameTrackHitsErrorXY.c_str(), nameTrackHitsErrorXY.c_str(),
-                  opt.trackHitsErrorBinsX, opt.trackHitsErrorMinX,
-                  opt.trackHitsErrorMaxX, opt.trackHitsErrorBinsY,
-                  opt.trackHitsErrorMinY, opt.trackHitsErrorMaxY)});
-
-    std::string nameLeaveOneOutTrackHitsErrorX =
-        prefix + "LeaveOneOutTrackHitsErrorX" + std::to_string(id);
-    leaveOneOutTrackHitsErrorXHists.insert(
-        {id, TH1D(nameLeaveOneOutTrackHitsErrorX.c_str(),
-                  nameLeaveOneOutTrackHitsErrorX.c_str(),
-                  opt.trackHitsLooErrorBinsX, opt.trackHitsLooErrorMinX,
-                  opt.trackHitsLooErrorMaxX)});
-    std::string nameLeaveOneOutTrackHitsErrorY =
-        prefix + "LeaveOneOutTrackHitsErrorY" + std::to_string(id);
-    leaveOneOutTrackHitsErrorYHists.insert(
-        {id, TH1D(nameLeaveOneOutTrackHitsErrorY.c_str(),
-                  nameLeaveOneOutTrackHitsErrorY.c_str(),
-                  opt.trackHitsLooErrorBinsY, opt.trackHitsLooErrorMinY,
-                  opt.trackHitsLooErrorMaxY)});
-    std::string nameLeaveOneOutTrackHitsErrorXY =
-        prefix + "LeaveOneOutTrackHitsErrorXY" + std::to_string(id);
-    leaveOneOutTrackHitsErrorXYHists.insert(
-        {id, TH2D(nameLeaveOneOutTrackHitsErrorXY.c_str(),
-                  nameLeaveOneOutTrackHitsErrorXY.c_str(),
-                  opt.trackHitsLooErrorBinsX, opt.trackHitsLooErrorMinX,
-                  opt.trackHitsLooErrorMaxX, opt.trackHitsLooErrorBinsY,
-                  opt.trackHitsLooErrorMinY, opt.trackHitsLooErrorMaxY)});
-
-    std::string nameLooTrackHitsErrorModelTrackHitsErrorX =
-        prefix + "LooTrackHitsErrorModelTrackHitsErrorX" + std::to_string(id);
-    looTrackHitsErrorModelTrackHitsErrorXHists.insert(
-        {id, TH2D(nameLooTrackHitsErrorModelTrackHitsErrorX.c_str(),
-                  nameLooTrackHitsErrorModelTrackHitsErrorX.c_str(),
-                  opt.trackHitsLooErrorBinsX, opt.trackHitsLooErrorMinX,
-                  opt.trackHitsLooErrorMaxX, opt.trackHitsErrorBinsX,
-                  opt.trackHitsErrorMinX, opt.trackHitsErrorMaxX)});
-    std::string nameLooTrackHitsErrorModelTrackHitsErrorY =
-        prefix + "LooTrackHitsErrorModelTrackHitsErrorY" + std::to_string(id);
-    looTrackHitsErrorModelTrackHitsErrorYHists.insert(
-        {id, TH2D(nameLooTrackHitsErrorModelTrackHitsErrorY.c_str(),
-                  nameLooTrackHitsErrorModelTrackHitsErrorY.c_str(),
-                  opt.trackHitsLooErrorBinsY, opt.trackHitsLooErrorMinY,
-                  opt.trackHitsLooErrorMaxY, opt.trackHitsErrorBinsY,
-                  opt.trackHitsErrorMinY, opt.trackHitsErrorMaxY)});
-
-    std::string nameLooTrackHitsErrorXTrackHitsLocalX =
-        prefix + "LooTrackHitsErrorXTrackHitsLocalX" + std::to_string(id);
-    looTrackHitsErrorXTrackHitsLocalXHists.insert(
-        {id, TH2D(nameLooTrackHitsErrorXTrackHitsLocalX.c_str(),
-                  nameLooTrackHitsErrorXTrackHitsLocalX.c_str(),
-                  opt.trackHitsLooErrorBinsX, opt.trackHitsLooErrorMinX,
-                  opt.trackHitsLooErrorMaxX, opt.trackHitsLocalBinsX,
-                  opt.trackHitsLocalMinX, opt.trackHitsLocalMaxX)});
   }
 
   // Residuals
@@ -1211,7 +983,7 @@ void RootTrackAnalyzer::Stats::init(const std::string &pfix,
            nameSmoothedResidualsYCumulativeHist.c_str(), opt.residualsYBins,
            opt.residualsYMin, opt.residualsYMax);
 
-  for (int id : chipIds) {
+  for (int id : opt.chipIds) {
     std::string nameFilteredResidualsXYHists =
         prefix + "FilteredResidualsXY" + std::to_string(id);
     filteredResidualsXYHists.insert(
@@ -1226,14 +998,6 @@ void RootTrackAnalyzer::Stats::init(const std::string &pfix,
                   nameSmoothedResidualsXYHists.c_str(), opt.residualsXBins,
                   opt.residualsXMin, opt.residualsXMax, opt.residualsYBins,
                   opt.residualsYMin, opt.residualsYMax)});
-    std::string nameLeaveOneOutResidualsXYHists =
-        prefix + "LeaveOneOutResidualsXY" + std::to_string(id);
-    leaveOneOutResidualsXYHists.insert(
-        {id,
-         TH2D(nameLeaveOneOutResidualsXYHists.c_str(),
-              nameLeaveOneOutResidualsXYHists.c_str(), opt.looResidualsXBins,
-              opt.looResidualsXMin, opt.looResidualsXMax, opt.looResidualsYBins,
-              opt.looResidualsYMin, opt.looResidualsYMax)});
 
     std::string namePredictedResidualsXHists =
         prefix + "PredictedResidualsX" + std::to_string(id);
@@ -1253,12 +1017,6 @@ void RootTrackAnalyzer::Stats::init(const std::string &pfix,
         {id, TH1D(nameSmoothedResidualsXHists.c_str(),
                   nameSmoothedResidualsXHists.c_str(), opt.residualsXBins,
                   opt.residualsXMin, opt.residualsXMax)});
-    std::string nameLeaveOneOutResidualsXHists =
-        prefix + "LeaveOneOutResidualsX" + std::to_string(id);
-    leaveOneOutResidualsXHists.insert(
-        {id, TH1D(nameLeaveOneOutResidualsXHists.c_str(),
-                  nameLeaveOneOutResidualsXHists.c_str(), opt.looResidualsXBins,
-                  opt.looResidualsXMin, opt.looResidualsXMax)});
 
     std::string namePredictedResidualsYHists =
         prefix + "PredictedResidualsY" + std::to_string(id);
@@ -1278,39 +1036,6 @@ void RootTrackAnalyzer::Stats::init(const std::string &pfix,
         {id, TH1D(nameSmoothedResidualsYHists.c_str(),
                   nameSmoothedResidualsYHists.c_str(), opt.residualsYBins,
                   opt.residualsYMin, opt.residualsYMax)});
-    std::string nameLeaveOneOutResidualsYHists =
-        prefix + "LeaveOneOutResidualsY" + std::to_string(id);
-    leaveOneOutResidualsYHists.insert(
-        {id, TH1D(nameLeaveOneOutResidualsYHists.c_str(),
-                  nameLeaveOneOutResidualsYHists.c_str(), opt.looResidualsYBins,
-                  opt.looResidualsYMin, opt.looResidualsYMax)});
-  }
-  for (std::size_t n = 0; n < chipIds_.size() - 1; n++) {
-    std::size_t idN = chipIds_.at(n);
-    for (std::size_t m = n + 1; m < chipIds_.size(); m++) {
-      auto mit = chipIds_.begin();
-      std::advance(mit, m);
-      std::size_t idM = chipIds_.at(m);
-
-      std::string nameSmoothedResidualsXXHists =
-          prefix + "SmoothedResidualsXX" + std::to_string(idN) +
-          std::to_string(idM);
-      smoothedResidualsXXHists.insert(
-          {idN * 100 + idM,
-           TH2D(nameSmoothedResidualsXXHists.c_str(),
-                nameSmoothedResidualsXXHists.c_str(), opt.residualsXBins,
-                opt.residualsXMin, opt.residualsXMax, opt.residualsXBins,
-                opt.residualsXMin, opt.residualsXMax)});
-      std::string nameSmoothedResidualsYYHists =
-          prefix + "SmoothedResidualsYY" + std::to_string(idN) +
-          std::to_string(idM);
-      smoothedResidualsYYHists.insert(
-          {idN * 100 + idM,
-           TH2D(nameSmoothedResidualsYYHists.c_str(),
-                nameSmoothedResidualsYYHists.c_str(), opt.residualsYBins,
-                opt.residualsYMin, opt.residualsYMax, opt.residualsYBins,
-                opt.residualsYMin, opt.residualsYMax)});
-    }
   }
 
   // Pulls
@@ -1352,7 +1077,7 @@ void RootTrackAnalyzer::Stats::init(const std::string &pfix,
            nameSmoothedPullsYCumulativeHist.c_str(), opt.pullsYBins,
            opt.pullsYMin, opt.pullsYMax);
 
-  for (int id : chipIds) {
+  for (int id : opt.chipIds) {
     std::string namePredictedPullsXHists =
         prefix + "PredictedPullsX" + std::to_string(id);
     predictedPullsXHists.insert(
@@ -1371,12 +1096,6 @@ void RootTrackAnalyzer::Stats::init(const std::string &pfix,
         {id,
          TH1D(nameSmoothedPullsXHists.c_str(), nameSmoothedPullsXHists.c_str(),
               opt.pullsXBins, opt.pullsXMin, opt.pullsXMax)});
-    std::string nameLeaveOneOutPullsXHists =
-        prefix + "LeaveOneOutPullsX" + std::to_string(id);
-    leaveOneOutPullsXHists.insert(
-        {id, TH1D(nameLeaveOneOutPullsXHists.c_str(),
-                  nameLeaveOneOutPullsXHists.c_str(), opt.pullsXBins,
-                  opt.pullsXMin, opt.pullsXMax)});
 
     std::string namePredictedPullsYHists =
         prefix + "PredictedPullsY" + std::to_string(id);
@@ -1396,12 +1115,6 @@ void RootTrackAnalyzer::Stats::init(const std::string &pfix,
         {id,
          TH1D(nameSmoothedPullsYHists.c_str(), nameSmoothedPullsYHists.c_str(),
               opt.pullsYBins, opt.pullsYMin, opt.pullsYMax)});
-    std::string nameLeaveOneOutPullsYHists =
-        prefix + "LeaveOneOutPullsY" + std::to_string(id);
-    leaveOneOutPullsYHists.insert(
-        {id, TH1D(nameLeaveOneOutPullsYHists.c_str(),
-                  nameLeaveOneOutPullsYHists.c_str(), opt.pullsYBins,
-                  opt.pullsYMin, opt.pullsYMax)});
   }
 
   // Momentum
@@ -1458,7 +1171,7 @@ void RootTrackAnalyzer::Stats::init(const std::string &pfix,
                         opt.vertexYBins, opt.vertexYMin, opt.vertexYMax);
 
   // Track residuals vs track hit parameters
-  for (int id : chipIds) {
+  for (int id : opt.chipIds) {
     std::string rxtxName =
         prefix + "SmoothedResidualsXTrackHitsLocalX" + std::to_string(id);
     smoothedResidualsXTrackHitsLocalXHists.insert(
@@ -1492,18 +1205,6 @@ void RootTrackAnalyzer::Stats::init(const std::string &pfix,
         prefix + "SmoothedResidualsYTrackHitsLocalPhi" + std::to_string(id);
     smoothedResidualsYTrackHitsLocalPhiHists.insert(
         {id, TH2D(rytphiName.c_str(), rytphiName.c_str(), 100, -M_PI, M_PI,
-                  opt.residualsYBins, opt.residualsYMin, opt.residualsYMax)});
-    std::string rxhexName =
-        prefix + "SmoothedResidualsXTrackHitsErrorX" + std::to_string(id);
-    smoothedResidualsXTrackHitsErrorXHists.insert(
-        {id, TH2D(rxhexName.c_str(), rxhexName.c_str(), opt.trackHitsErrorBinsX,
-                  opt.trackHitsErrorMinX, opt.trackHitsErrorMaxX,
-                  opt.residualsXBins, opt.residualsXMin, opt.residualsXMax)});
-    std::string ryheyName =
-        prefix + "SmoothedResidualsYTrackHitsErrorY" + std::to_string(id);
-    smoothedResidualsYTrackHitsErrorYHists.insert(
-        {id, TH2D(ryheyName.c_str(), ryheyName.c_str(), opt.trackHitsErrorBinsY,
-                  opt.trackHitsErrorMinY, opt.trackHitsErrorMaxY,
                   opt.residualsYBins, opt.residualsYMin, opt.residualsYMax)});
 
     std::string rxvxName =
@@ -1546,7 +1247,7 @@ void RootTrackAnalyzer::Stats::init(const std::string &pfix,
   }
 
   // Track pulls vs track hit parameters
-  for (int id : chipIds) {
+  for (int id : opt.chipIds) {
     std::string pxtxName =
         prefix + "SmoothedPullsXTrackHitsLocalX" + std::to_string(id);
     smoothedPullsXTrackHitsLocalXHists.insert(
@@ -1574,31 +1275,127 @@ void RootTrackAnalyzer::Stats::init(const std::string &pfix,
   }
 }
 
-void RootTrackAnalyzer::Stats::reset() {}
+void RootTrackAnalyzer::Stats::Core::normalize(std::size_t nBXs,
+                                               const Options &opt) {
+  xCountHist.Scale(1.0 / nBXs);
+  magnetConfHist.Scale(1.0 / nBXs);
 
-void RootTrackAnalyzer::Stats::print() {
+  nTracksHist.Scale(1.0 / nBXs);
+  nTracksNClustersHist.Scale(1.0 / nBXs);
+
+  chi2PredictedHist.Scale(1.0 / nBXs);
+  chi2FilteredHist.Scale(1.0 / nBXs);
+  chi2SmoothedHist.Scale(1.0 / nBXs);
+
+  predictedResidualsXCumulativeHist.Scale(
+      1.0 / predictedResidualsXCumulativeHist.Integral(), "width");
+  filteredResidualsXCumulativeHist.Scale(
+      1.0 / filteredResidualsXCumulativeHist.Integral(), "width");
+  smoothedResidualsXCumulativeHist.Scale(
+      1.0 / smoothedResidualsXCumulativeHist.Integral(), "width");
+
+  predictedResidualsYCumulativeHist.Scale(
+      1.0 / predictedResidualsYCumulativeHist.Integral(), "width");
+  filteredResidualsYCumulativeHist.Scale(
+      1.0 / filteredResidualsYCumulativeHist.Integral(), "width");
+  smoothedResidualsYCumulativeHist.Scale(
+      1.0 / smoothedResidualsYCumulativeHist.Integral(), "width");
+
+  predictedPullsXCumulativeHist.Scale(
+      1.0 / predictedPullsXCumulativeHist.Integral(), "width");
+  filteredPullsXCumulativeHist.Scale(
+      1.0 / filteredPullsXCumulativeHist.Integral(), "width");
+  smoothedPullsXCumulativeHist.Scale(
+      1.0 / smoothedPullsXCumulativeHist.Integral(), "width");
+
+  predictedPullsYCumulativeHist.Scale(
+      1.0 / predictedPullsYCumulativeHist.Integral(), "width");
+  filteredPullsYCumulativeHist.Scale(
+      1.0 / filteredPullsYCumulativeHist.Integral(), "width");
+  smoothedPullsYCumulativeHist.Scale(
+      1.0 / smoothedPullsYCumulativeHist.Integral(), "width");
+
+  for (std::size_t geoId : opt.chipIds) {
+    nClustersHist.at(geoId).Scale(1.0 / nBXs);
+
+    trackHitsLocalHists.at(geoId).Scale(1.0 / nBXs);
+
+    filteredResidualsXYHists.at(geoId).Scale(1.0 / nBXs);
+    smoothedResidualsXYHists.at(geoId).Scale(1.0 / nBXs);
+
+    predictedResidualsXHists.at(geoId).Scale(
+        1.0 / predictedResidualsXHists.at(geoId).Integral(), "width");
+    filteredResidualsXHists.at(geoId).Scale(
+        1.0 / filteredResidualsXHists.at(geoId).Integral(), "width");
+    smoothedResidualsXHists.at(geoId).Scale(
+        1.0 / smoothedResidualsXHists.at(geoId).Integral(), "width");
+
+    predictedResidualsYHists.at(geoId).Scale(
+        1.0 / predictedResidualsYHists.at(geoId).Integral(), "width");
+    filteredResidualsYHists.at(geoId).Scale(
+        1.0 / filteredResidualsYHists.at(geoId).Integral(), "width");
+    smoothedResidualsYHists.at(geoId).Scale(
+        1.0 / smoothedResidualsYHists.at(geoId).Integral(), "width");
+
+    predictedPullsXHists.at(geoId).Scale(
+        1.0 / predictedPullsXHists.at(geoId).Integral(), "width");
+    filteredPullsXHists.at(geoId).Scale(
+        1.0 / filteredPullsXHists.at(geoId).Integral(), "width");
+    smoothedPullsXHists.at(geoId).Scale(
+        1.0 / smoothedPullsXHists.at(geoId).Integral(), "width");
+
+    predictedPullsYHists.at(geoId).Scale(
+        1.0 / predictedPullsYHists.at(geoId).Integral(), "width");
+    filteredPullsYHists.at(geoId).Scale(
+        1.0 / filteredPullsYHists.at(geoId).Integral(), "width");
+    smoothedPullsYHists.at(geoId).Scale(
+        1.0 / smoothedPullsYHists.at(geoId).Integral(), "width");
+
+    smoothedResidualsXTrackHitsLocalXHists.at(geoId).Scale(1.0 / nBXs);
+    smoothedResidualsXTrackHitsLocalYHists.at(geoId).Scale(1.0 / nBXs);
+    smoothedResidualsYTrackHitsLocalXHists.at(geoId).Scale(1.0 / nBXs);
+    smoothedResidualsYTrackHitsLocalYHists.at(geoId).Scale(1.0 / nBXs);
+    smoothedResidualsXTrackHitsLocalPhiHists.at(geoId).Scale(1.0 / nBXs);
+    smoothedResidualsYTrackHitsLocalPhiHists.at(geoId).Scale(1.0 / nBXs);
+
+    smoothedResidualsXVertexEstXHists.at(geoId).Scale(1.0 / nBXs);
+    smoothedResidualsXVertexEstYHists.at(geoId).Scale(1.0 / nBXs);
+    smoothedResidualsYVertexEstXHists.at(geoId).Scale(1.0 / nBXs);
+    smoothedResidualsYVertexEstYHists.at(geoId).Scale(1.0 / nBXs);
+
+    smoothedResidualsXOriginMomentumEstPyHists.at(geoId).Scale(1.0 / nBXs);
+    smoothedResidualsYOriginMomentumEstPyHists.at(geoId).Scale(1.0 / nBXs);
+
+    smoothedPullsXTrackHitsLocalXHists.at(geoId).Scale(1.0 / nBXs);
+    smoothedPullsXTrackHitsLocalYHists.at(geoId).Scale(1.0 / nBXs);
+    smoothedPullsYTrackHitsLocalXHists.at(geoId).Scale(1.0 / nBXs);
+    smoothedPullsYTrackHitsLocalYHists.at(geoId).Scale(1.0 / nBXs);
+  }
+
+  originMomentumEstPxHist.Scale(1.0 / nBXs);
+  originMomentumEstPyHist.Scale(1.0 / nBXs);
+  originMomentumEstPzHist.Scale(1.0 / nBXs);
+
+  originMomentumEstDxHist.Scale(1.0 / nBXs);
+  originMomentumEstDyHist.Scale(1.0 / nBXs);
+  originMomentumEstDzHist.Scale(1.0 / nBXs);
+
+  originMomentumEstPhiHist.Scale(1.0 / nBXs);
+  originMomentumEstThetaHist.Scale(1.0 / nBXs);
+
+  vertexEstXYHist.Scale(1.0 / nBXs);
+  vertexEstXHist.Scale(1.0 / nBXs);
+  vertexEstYHist.Scale(1.0 / nBXs);
+}
+
+void RootTrackAnalyzer::Stats::Core::print(TCanvas &c,
+                                           const std::string &cOptionFirst,
+                                           const std::string &cOption,
+                                           const Options &opt) {
   using enum HistPainterConfig::StatBoxConfig::EntryOpt;
 
-  TCanvas c = TCanvas(prefix.c_str(), "", 800, 800);
-  TH1D dummy("dummy", "dummy", 100, 0, 100);
-
-  LegendPainterConfig legCfg;
-  legCfg.draw = true;
-  legCfg.option = "p";
-
-  std::string cOptionFirst = prefix + ".pdf(";
-  std::string cOptionLast = prefix + ".pdf)";
-  std::string cOption = prefix + ".pdf";
-
-  // FuncPainterConfig fitFuncCfg;
-  // fitFuncCfg.lineWidth = 2;
-  // fitFuncCfg.drawPars = true;
-  // fitFuncCfg.parsTextSize = 0.036;
-  // fitFuncCfg.parsStartX = 0.0035;
-  // fitFuncCfg.parsStartY = 95;
-  // fitFuncCfg.parsSpacingY = 10;
-  // fitFuncCfg.parsScale = 1e3;
-  // fitFuncCfg.parsUnits = {"um", "um"};
+  std::vector<std::size_t> chipIds_(opt.chipIds.begin(), opt.chipIds.end());
+  std::sort(chipIds_.begin(), chipIds_.end());
 
   // Counters
   HistPainterConfig cfgCutFlow;
@@ -1643,7 +1440,7 @@ void RootTrackAnalyzer::Stats::print() {
 
   HistPainterConfig cfgNClusters;
   cfgNClusters.canvasXSize = 10000;
-  cfgNClusters.canvasYSize = 10000. / chipIds.size();
+  cfgNClusters.canvasYSize = 10000. / opt.chipIds.size();
   cfgNClusters.stats = true;
   cfgNClusters.xTitle = "N clusters/BX";
   cfgNClusters.yTitle = "Entries";
@@ -1662,7 +1459,7 @@ void RootTrackAnalyzer::Stats::print() {
   cfgNTracksNClusters.option = "colz";
 
   std::vector<std::pair<TH1 &, HistPainterConfig>> ncHists;
-  for (std::size_t id : chipIds) {
+  for (std::size_t id : opt.chipIds) {
     ncHists.push_back({nClustersHist.at(id), cfgNClusters});
   }
 
@@ -1697,173 +1494,26 @@ void RootTrackAnalyzer::Stats::print() {
   cfgXCountChi2.padRightMargin = 0.06;
   cfgXCountChi2.yTitleOffset = 1.5;
 
-  saveHist(c, cOptionFirst, {chi2SmoothedXCountHist, cfgXCountChi2});
+  saveHist(c, cOption, {chi2SmoothedXCountHist, cfgXCountChi2});
 
   // Local track hits
   HistPainterConfig cfgLocalTrackHits;
   cfgLocalTrackHits.canvasXSize = 10000;
-  cfgLocalTrackHits.canvasYSize = 10000. / chipIds.size();
+  cfgLocalTrackHits.canvasYSize = 10000. / opt.chipIds.size();
   cfgLocalTrackHits.stats = false;
   cfgLocalTrackHits.xTitle = "x_{hit}, [mm]";
   cfgLocalTrackHits.yTitle = "y_{hit}, [mm]";
   cfgLocalTrackHits.option = "col";
   std::vector<std::pair<TH1 &, HistPainterConfig>> hxhyHists;
-  for (std::size_t id : chipIds) {
+  for (std::size_t id : opt.chipIds) {
     hxhyHists.push_back({trackHitsLocalHists.at(id), cfgLocalTrackHits});
   }
   saveHist(c, cOption, hxhyHists);
 
-  HistPainterConfig cfgHitXHitX;
-  cfgHitXHitX.canvasXSize = 10000;
-  cfgHitXHitX.canvasYSize = 10000. / (chipIds.size() - 1);
-  cfgHitXHitX.stats = true;
-  cfgHitXHitX.xTitle = "x^{hit}, [mm]";
-  cfgHitXHitX.yTitle = "x^{hit}, [mm]";
-  cfgHitXHitX.xAdjustDivisions = true;
-  cfgHitXHitX.xNDivisions = 5;
-
-  HistPainterConfig cfgHitYHitY;
-  cfgHitYHitY.canvasXSize = 10000;
-  cfgHitYHitY.canvasYSize = 10000. / (chipIds.size() - 1);
-  cfgHitYHitY.stats = true;
-  cfgHitYHitY.xTitle = "y^{hit}, [mm]";
-  cfgHitYHitY.yTitle = "y^{hit}, [mm]";
-  cfgHitYHitY.xAdjustDivisions = true;
-  cfgHitYHitY.xNDivisions = 5;
-
-  std::vector<std::size_t> chipIds_(chipIds.begin(), chipIds.end());
-  std::sort(chipIds_.begin(), chipIds_.end());
-  for (std::size_t n = 0; n < chipIds_.size() - 1; n++) {
-    std::size_t idN = chipIds_.at(n);
-    std::vector<std::pair<TH1 &, HistPainterConfig>> hitxhitxHists;
-    for (std::size_t m = n + 1; m < chipIds_.size(); m++) {
-      std::size_t idM = chipIds_.at(m);
-      hitxhitxHists.push_back(
-          {trackHitsLocalXXHists.at(idN * 100 + idM), cfgHitXHitX});
-    }
-    for (std::size_t m = hitxhitxHists.size(); m < chipIds_.size() - 1; m++) {
-      hitxhitxHists.push_back({dummy, cfgHitXHitX});
-    }
-    saveHist(c, cOption, hitxhitxHists);
-  }
-  for (std::size_t n = 0; n < chipIds_.size() - 1; n++) {
-    std::size_t idN = chipIds_.at(n);
-    std::vector<std::pair<TH1 &, HistPainterConfig>> hityhityHists;
-    for (std::size_t m = n + 1; m < chipIds_.size(); m++) {
-      std::size_t idM = chipIds_.at(m);
-      hityhityHists.push_back(
-          {trackHitsLocalYYHists.at(idN * 100 + idM), cfgHitYHitY});
-    }
-    for (std::size_t m = hityhityHists.size(); m < chipIds_.size() - 1; m++) {
-      hityhityHists.push_back({dummy, cfgHitYHitY});
-    }
-    saveHist(c, cOption, hityhityHists);
-  }
-
-  // Track hits error
-  HistPainterConfig cfgTrackHitsErrorX;
-  cfgTrackHitsErrorX.canvasXSize = 10000;
-  cfgTrackHitsErrorX.canvasYSize = 10000. / chipIds.size();
-  cfgTrackHitsErrorX.stats = true;
-  cfgTrackHitsErrorX.xTitle = "#sigma_{x_{hit}}, [mm]";
-  cfgTrackHitsErrorX.yTitle = "Hits/BX";
-
-  HistPainterConfig cfgTrackHitsErrorY;
-  cfgTrackHitsErrorY.canvasXSize = 10000;
-  cfgTrackHitsErrorY.canvasYSize = 10000. / chipIds.size();
-  cfgTrackHitsErrorY.stats = true;
-  cfgTrackHitsErrorY.xTitle = "#sigma_{y_{hit}}, [mm]";
-  cfgTrackHitsErrorY.yTitle = "Hits/BX";
-
-  HistPainterConfig cfgTrackHitsErrorXY;
-  cfgTrackHitsErrorXY.canvasXSize = 10000;
-  cfgTrackHitsErrorXY.canvasYSize = 10000. / chipIds.size();
-  cfgTrackHitsErrorXY.stats = false;
-  cfgTrackHitsErrorXY.xTitle = "#sigma_{x_{hit}}, [mm]";
-  cfgTrackHitsErrorXY.yTitle = "#sigma_{y_{hit}}, [mm]";
-  cfgTrackHitsErrorXY.option = "col";
-
-  HistPainterConfig cfgLooTrackHitsErrorModelTrackHitsErrorX;
-  cfgLooTrackHitsErrorModelTrackHitsErrorX.canvasXSize = 10000;
-  cfgLooTrackHitsErrorModelTrackHitsErrorX.canvasYSize =
-      10000. / chipIds.size();
-  cfgLooTrackHitsErrorModelTrackHitsErrorX.stats = false;
-  cfgLooTrackHitsErrorModelTrackHitsErrorX.xTitle =
-      "#sigma_{x_{hit, loo}}, [mm]";
-  cfgLooTrackHitsErrorModelTrackHitsErrorX.yTitle =
-      "#sigma_{x_{hit, model}}, [mm]";
-  cfgLooTrackHitsErrorModelTrackHitsErrorX.option = "col";
-
-  HistPainterConfig cfgLooTrackHitsErrorModelTrackHitsErrorY;
-  cfgLooTrackHitsErrorModelTrackHitsErrorY.canvasXSize = 10000;
-  cfgLooTrackHitsErrorModelTrackHitsErrorY.canvasYSize =
-      10000. / chipIds.size();
-  cfgLooTrackHitsErrorModelTrackHitsErrorY.stats = false;
-  cfgLooTrackHitsErrorModelTrackHitsErrorY.xTitle =
-      "#sigma_{y_{hit, loo}}, [mm]";
-  cfgLooTrackHitsErrorModelTrackHitsErrorY.yTitle =
-      "#sigma_{y_{hit, model}}, [mm]";
-  cfgLooTrackHitsErrorModelTrackHitsErrorY.option = "col";
-
-  HistPainterConfig cfgLooTrackHitsErrorXTrackHitsLocalX;
-  cfgLooTrackHitsErrorXTrackHitsLocalX.canvasXSize = 10000;
-  cfgLooTrackHitsErrorXTrackHitsLocalX.canvasYSize = 10000. / chipIds.size();
-  cfgLooTrackHitsErrorXTrackHitsLocalX.stats = false;
-  cfgLooTrackHitsErrorXTrackHitsLocalX.xTitle = "#sigma_{x_{hit, loo}}, [mm]";
-  cfgLooTrackHitsErrorXTrackHitsLocalX.yTitle = "x_{hit}, [mm]";
-  cfgLooTrackHitsErrorXTrackHitsLocalX.option = "col";
-
-  std::vector<std::pair<TH1 &, HistPainterConfig>> hexHists;
-  std::vector<std::pair<TH1 &, HistPainterConfig>> heyHists;
-  std::vector<std::pair<TH1 &, HistPainterConfig>> hexheyHists;
-
-  std::vector<std::pair<TH1 &, HistPainterConfig>> loohexHists;
-  std::vector<std::pair<TH1 &, HistPainterConfig>> looheyHists;
-  std::vector<std::pair<TH1 &, HistPainterConfig>> loohexheyHists;
-
-  std::vector<std::pair<TH1 &, HistPainterConfig>> loohexmhexHists;
-  std::vector<std::pair<TH1 &, HistPainterConfig>> looheymheyHists;
-
-  std::vector<std::pair<TH1 &, HistPainterConfig>> loohexthlxHists;
-  for (std::size_t id : chipIds) {
-    hexHists.push_back({trackHitsErrorXHists.at(id), cfgTrackHitsErrorX});
-    heyHists.push_back({trackHitsErrorYHists.at(id), cfgTrackHitsErrorY});
-    hexheyHists.push_back({trackHitsErrorXYHists.at(id), cfgTrackHitsErrorXY});
-
-    loohexHists.push_back(
-        {leaveOneOutTrackHitsErrorXHists.at(id), cfgTrackHitsErrorX});
-    looheyHists.push_back(
-        {leaveOneOutTrackHitsErrorYHists.at(id), cfgTrackHitsErrorY});
-    loohexheyHists.push_back(
-        {leaveOneOutTrackHitsErrorXYHists.at(id), cfgTrackHitsErrorXY});
-
-    loohexmhexHists.push_back(
-        {looTrackHitsErrorModelTrackHitsErrorXHists.at(id),
-         cfgLooTrackHitsErrorModelTrackHitsErrorX});
-    looheymheyHists.push_back(
-        {looTrackHitsErrorModelTrackHitsErrorYHists.at(id),
-         cfgLooTrackHitsErrorModelTrackHitsErrorY});
-    loohexthlxHists.push_back({looTrackHitsErrorXTrackHitsLocalXHists.at(id),
-                               cfgLooTrackHitsErrorXTrackHitsLocalX});
-  }
-
-  saveHist(c, cOption, hexHists);
-  saveHist(c, cOption, heyHists);
-  saveHist(c, cOption, hexheyHists);
-
-  saveHist(c, cOption, loohexHists);
-  saveHist(c, cOption, looheyHists);
-  saveHist(c, cOption, loohexheyHists);
-
-  saveHist(c, cOption, loohexmhexHists);
-  saveHist(c, cOption, looheymheyHists);
-
-  saveHist(c, cOption, loohexthlxHists);
-
   // Residuals
   HistPainterConfig cfgResXY;
   cfgResXY.canvasXSize = 10000;
-  cfgResXY.canvasYSize = 10000. / chipIds.size();
+  cfgResXY.canvasYSize = 10000. / opt.chipIds.size();
   cfgResXY.stats = true;
   cfgResXY.xTitle = "x^{hit} - x^{est}, [mm]";
   cfgResXY.yTitle = "y^{hit} - y^{est}, [mm]";
@@ -1899,93 +1549,38 @@ void RootTrackAnalyzer::Stats::print() {
 
   std::vector<std::pair<TH1 &, HistPainterConfig>> frxyHists;
   std::vector<std::pair<TH1 &, HistPainterConfig>> srxyHists;
-  std::vector<std::pair<TH1 &, HistPainterConfig>> loorxyHists;
 
   std::vector<std::pair<TH1 &, HistPainterConfig>> prxHists;
   std::vector<std::pair<TH1 &, HistPainterConfig>> frxHists;
   std::vector<std::pair<TH1 &, HistPainterConfig>> srxHists;
-  std::vector<std::pair<TH1 &, HistPainterConfig>> loorxHists;
 
   std::vector<std::pair<TH1 &, HistPainterConfig>> pryHists;
   std::vector<std::pair<TH1 &, HistPainterConfig>> fryHists;
   std::vector<std::pair<TH1 &, HistPainterConfig>> sryHists;
-  std::vector<std::pair<TH1 &, HistPainterConfig>> looryHists;
-  cfgResX.canvasYSize = 10000. / chipIds.size();
-  cfgResY.canvasYSize = 10000. / chipIds.size();
-  for (std::size_t id : chipIds) {
+  cfgResX.canvasYSize = 10000. / opt.chipIds.size();
+  cfgResY.canvasYSize = 10000. / opt.chipIds.size();
+  for (std::size_t id : opt.chipIds) {
     frxyHists.push_back({filteredResidualsXYHists.at(id), cfgResXY});
     srxyHists.push_back({smoothedResidualsXYHists.at(id), cfgResXY});
-    loorxyHists.push_back({leaveOneOutResidualsXYHists.at(id), cfgResXY});
 
     prxHists.push_back({predictedResidualsXHists.at(id), cfgResX});
     frxHists.push_back({filteredResidualsXHists.at(id), cfgResX});
     srxHists.push_back({smoothedResidualsXHists.at(id), cfgResX});
-    loorxHists.push_back({leaveOneOutResidualsXHists.at(id), cfgResX});
 
     pryHists.push_back({predictedResidualsYHists.at(id), cfgResY});
     fryHists.push_back({filteredResidualsYHists.at(id), cfgResY});
     sryHists.push_back({smoothedResidualsYHists.at(id), cfgResY});
-    looryHists.push_back({leaveOneOutResidualsYHists.at(id), cfgResY});
   }
   saveHist(c, cOption, frxyHists);
   saveHist(c, cOption, srxyHists);
-  saveHist(c, cOption, loorxyHists);
 
   saveHist(c, cOption, prxHists);
   saveHist(c, cOption, frxHists);
   saveHist(c, cOption, srxHists);
-  saveHist(c, cOption, loorxHists);
 
   saveHist(c, cOption, pryHists);
   saveHist(c, cOption, fryHists);
   saveHist(c, cOption, sryHists);
-  saveHist(c, cOption, looryHists);
-
-  HistPainterConfig cfgResXResX;
-  cfgResXResX.canvasXSize = 10000;
-  cfgResXResX.canvasYSize = 10000. / (chipIds.size() - 1);
-  cfgResXResX.stats = true;
-  cfgResXResX.xTitle = "x^{hit} - x^{est}, [mm]";
-  cfgResXResX.yTitle = "x^{hit} - x^{est}, [mm]";
-  cfgResXResX.xAdjustDivisions = true;
-  cfgResXResX.xNDivisions = 5;
-
-  HistPainterConfig cfgResYResY;
-  cfgResYResY.canvasXSize = 10000;
-  cfgResYResY.canvasYSize = 10000. / (chipIds.size() - 1);
-  cfgResYResY.stats = true;
-  cfgResYResY.xTitle = "y^{hit} - y^{est}, [mm]";
-  cfgResYResY.yTitle = "y^{hit} - y^{est}, [mm]";
-  cfgResYResY.xAdjustDivisions = true;
-  cfgResYResY.xNDivisions = 5;
-
-  std::sort(chipIds_.begin(), chipIds_.end());
-  for (std::size_t n = 0; n < chipIds_.size() - 1; n++) {
-    std::size_t idN = chipIds_.at(n);
-    std::vector<std::pair<TH1 &, HistPainterConfig>> resxresxHists;
-    for (std::size_t m = n + 1; m < chipIds_.size(); m++) {
-      std::size_t idM = chipIds_.at(m);
-      resxresxHists.push_back(
-          {smoothedResidualsXXHists.at(idN * 100 + idM), cfgResXResX});
-    }
-    for (std::size_t m = resxresxHists.size(); m < chipIds_.size() - 1; m++) {
-      resxresxHists.push_back({dummy, cfgResXResX});
-    }
-    saveHist(c, cOption, resxresxHists);
-  }
-  for (std::size_t n = 0; n < chipIds_.size() - 1; n++) {
-    std::size_t idN = chipIds_.at(n);
-    std::vector<std::pair<TH1 &, HistPainterConfig>> resyresyHists;
-    for (std::size_t m = n + 1; m < chipIds_.size(); m++) {
-      std::size_t idM = chipIds_.at(m);
-      resyresyHists.push_back(
-          {smoothedResidualsYYHists.at(idN * 100 + idM), cfgResYResY});
-    }
-    for (std::size_t m = resyresyHists.size(); m < chipIds_.size() - 1; m++) {
-      resyresyHists.push_back({dummy, cfgResYResY});
-    }
-    saveHist(c, cOption, resyresyHists);
-  }
 
   // Pulls
   HistPainterConfig cfgPullX;
@@ -2020,34 +1615,28 @@ void RootTrackAnalyzer::Stats::print() {
   std::vector<std::pair<TH1 &, HistPainterConfig>> ppxHists;
   std::vector<std::pair<TH1 &, HistPainterConfig>> fpxHists;
   std::vector<std::pair<TH1 &, HistPainterConfig>> spxHists;
-  std::vector<std::pair<TH1 &, HistPainterConfig>> loopxHists;
 
   std::vector<std::pair<TH1 &, HistPainterConfig>> ppyHists;
   std::vector<std::pair<TH1 &, HistPainterConfig>> fpyHists;
   std::vector<std::pair<TH1 &, HistPainterConfig>> spyHists;
-  std::vector<std::pair<TH1 &, HistPainterConfig>> loopyHists;
   cfgPullX.canvasYSize = 10000. / chipIds_.size();
   cfgPullY.canvasYSize = 10000. / chipIds_.size();
   for (std::size_t id : chipIds_) {
     ppxHists.push_back({predictedPullsXHists.at(id), cfgPullX});
     fpxHists.push_back({filteredPullsXHists.at(id), cfgPullX});
     spxHists.push_back({smoothedPullsXHists.at(id), cfgPullX});
-    loopxHists.push_back({leaveOneOutPullsXHists.at(id), cfgPullX});
 
     ppyHists.push_back({predictedPullsYHists.at(id), cfgPullY});
     fpyHists.push_back({filteredPullsYHists.at(id), cfgPullY});
     spyHists.push_back({smoothedPullsYHists.at(id), cfgPullY});
-    loopyHists.push_back({leaveOneOutPullsYHists.at(id), cfgPullY});
   }
   saveHist(c, cOption, ppxHists);
   saveHist(c, cOption, fpxHists);
   saveHist(c, cOption, spxHists);
-  saveHist(c, cOption, loopxHists);
 
   saveHist(c, cOption, ppyHists);
   saveHist(c, cOption, fpyHists);
   saveHist(c, cOption, spyHists);
-  saveHist(c, cOption, loopyHists);
 
   // Momentum
   HistPainterConfig cfgPx;
@@ -2219,28 +1808,12 @@ void RootTrackAnalyzer::Stats::print() {
   cfgRyHphi.yTitle = "y^{hit} - y^{est}, [mm]";
   cfgRyHphi.option = "col";
 
-  HistPainterConfig cfgRxHex;
-  cfgRxHex.canvasXSize = 10000;
-  cfgRxHex.canvasYSize = 10000. / chipIds_.size();
-  cfgRxHex.xTitle = "#sigma_{x_{hit}}, [mm]";
-  cfgRxHex.yTitle = "x^{hit} - x^{est}, [mm]";
-  cfgRxHex.option = "col";
-
-  HistPainterConfig cfgRyHey;
-  cfgRyHey.canvasXSize = 10000;
-  cfgRyHey.canvasYSize = 10000. / chipIds_.size();
-  cfgRyHey.xTitle = "#sigma_{y_{hit}}, [mm]";
-  cfgRyHey.yTitle = "y^{hit} - y^{est}, [mm]";
-  cfgRyHey.option = "col";
-
   std::vector<std::pair<TH1 &, HistPainterConfig>> rxhxHists;
   std::vector<std::pair<TH1 &, HistPainterConfig>> rxhyHists;
   std::vector<std::pair<TH1 &, HistPainterConfig>> rxhphiHists;
   std::vector<std::pair<TH1 &, HistPainterConfig>> ryhxHists;
   std::vector<std::pair<TH1 &, HistPainterConfig>> ryhyHists;
   std::vector<std::pair<TH1 &, HistPainterConfig>> ryhphiHists;
-  std::vector<std::pair<TH1 &, HistPainterConfig>> rxhexHists;
-  std::vector<std::pair<TH1 &, HistPainterConfig>> ryheyHists;
   for (std::size_t id : chipIds_) {
     rxhxHists.push_back(
         {smoothedResidualsXTrackHitsLocalXHists.at(id), cfgRxHx});
@@ -2254,10 +1827,6 @@ void RootTrackAnalyzer::Stats::print() {
         {smoothedResidualsYTrackHitsLocalYHists.at(id), cfgRyHy});
     ryhphiHists.push_back(
         {smoothedResidualsYTrackHitsLocalPhiHists.at(id), cfgRyHphi});
-    rxhexHists.push_back(
-        {smoothedResidualsXTrackHitsErrorXHists.at(id), cfgRxHex});
-    ryheyHists.push_back(
-        {smoothedResidualsYTrackHitsErrorYHists.at(id), cfgRyHey});
   }
   saveHist(c, cOption, rxhxHists);
   saveHist(c, cOption, rxhyHists);
@@ -2265,8 +1834,6 @@ void RootTrackAnalyzer::Stats::print() {
   saveHist(c, cOption, ryhxHists);
   saveHist(c, cOption, ryhyHists);
   saveHist(c, cOption, ryhphiHists);
-  saveHist(c, cOption, rxhexHists);
-  saveHist(c, cOption, ryheyHists);
 
   // Track residuals vs track parameters
   HistPainterConfig cfgRxVx;
@@ -2378,6 +1945,473 @@ void RootTrackAnalyzer::Stats::print() {
   saveHist(c, cOption, pxhyHists);
   saveHist(c, cOption, pyhxHists);
   saveHist(c, cOption, pyhyHists);
+}
+
+void RootTrackAnalyzer::Stats::LeaveOneOut::init(const std::string &prefix,
+                                                 const Options &opt) {
+  for (int id : opt.chipIds) {
+    std::string nameLeaveOneOutResidualsXYHists =
+        prefix + "LeaveOneOutResidualsXY" + std::to_string(id);
+    leaveOneOutResidualsXYHists.insert(
+        {id,
+         TH2D(nameLeaveOneOutResidualsXYHists.c_str(),
+              nameLeaveOneOutResidualsXYHists.c_str(), opt.looResidualsXBins,
+              opt.looResidualsXMin, opt.looResidualsXMax, opt.looResidualsYBins,
+              opt.looResidualsYMin, opt.looResidualsYMax)});
+
+    std::string nameLeaveOneOutResidualsXHists =
+        prefix + "LeaveOneOutResidualsX" + std::to_string(id);
+    leaveOneOutResidualsXHists.insert(
+        {id, TH1D(nameLeaveOneOutResidualsXHists.c_str(),
+                  nameLeaveOneOutResidualsXHists.c_str(), opt.looResidualsXBins,
+                  opt.looResidualsXMin, opt.looResidualsXMax)});
+    std::string nameLeaveOneOutResidualsYHists =
+        prefix + "LeaveOneOutResidualsY" + std::to_string(id);
+    leaveOneOutResidualsYHists.insert(
+        {id, TH1D(nameLeaveOneOutResidualsYHists.c_str(),
+                  nameLeaveOneOutResidualsYHists.c_str(), opt.looResidualsYBins,
+                  opt.looResidualsYMin, opt.looResidualsYMax)});
+
+    std::string nameLeaveOneOutPullsXHists =
+        prefix + "LeaveOneOutPullsX" + std::to_string(id);
+    leaveOneOutPullsXHists.insert(
+        {id, TH1D(nameLeaveOneOutPullsXHists.c_str(),
+                  nameLeaveOneOutPullsXHists.c_str(), opt.pullsXBins,
+                  opt.pullsXMin, opt.pullsXMax)});
+    std::string nameLeaveOneOutPullsYHists =
+        prefix + "LeaveOneOutPullsY" + std::to_string(id);
+    leaveOneOutPullsYHists.insert(
+        {id, TH1D(nameLeaveOneOutPullsYHists.c_str(),
+                  nameLeaveOneOutPullsYHists.c_str(), opt.pullsYBins,
+                  opt.pullsYMin, opt.pullsYMax)});
+  }
+}
+
+void RootTrackAnalyzer::Stats::LeaveOneOut::normalize(std::size_t nBXs,
+                                                      const Options &opt) {
+  for (std::size_t geoId : opt.chipIds) {
+    leaveOneOutResidualsXYHists.at(geoId).Scale(1.0 / nBXs);
+
+    leaveOneOutResidualsXHists.at(geoId).Scale(
+        1.0 / leaveOneOutResidualsXHists.at(geoId).Integral(), "width");
+    leaveOneOutResidualsYHists.at(geoId).Scale(
+        1.0 / leaveOneOutResidualsYHists.at(geoId).Integral(), "width");
+
+    leaveOneOutPullsXHists.at(geoId).Scale(
+        1.0 / leaveOneOutPullsXHists.at(geoId).Integral(), "width");
+    leaveOneOutPullsYHists.at(geoId).Scale(
+        1.0 / leaveOneOutPullsYHists.at(geoId).Integral(), "width");
+  }
+}
+
+void RootTrackAnalyzer::Stats::LeaveOneOut::print(TCanvas &c,
+                                                  const std::string &cOption,
+                                                  const Options &opt) {
+  // Residuals
+  HistPainterConfig cfgResXY;
+  cfgResXY.canvasXSize = 10000;
+  cfgResXY.canvasYSize = 10000. / opt.chipIds.size();
+  cfgResXY.stats = true;
+  cfgResXY.xTitle = "x^{hit} - x^{est}, [mm]";
+  cfgResXY.yTitle = "y^{hit} - y^{est}, [mm]";
+  cfgResXY.xAdjustDivisions = true;
+  cfgResXY.option = "col";
+
+  HistPainterConfig cfgResX;
+  cfgResX.canvasXSize = 10000;
+  cfgResX.canvasYSize = 10000. / 3;
+  cfgResX.stats = true;
+  cfgResX.xTitle = "x^{hit} - x^{est}, [mm]";
+  cfgResX.yTitle = "Prob.";
+  cfgResX.xAdjustDivisions = true;
+  cfgResX.xNDivisions = 5;
+
+  HistPainterConfig cfgResY;
+  cfgResY.canvasXSize = 10000;
+  cfgResY.canvasYSize = 10000. / 3;
+  cfgResY.stats = true;
+  cfgResY.xTitle = "y^{hit} - y^{est}, [mm]";
+  cfgResY.yTitle = "Prob.";
+  cfgResY.xAdjustDivisions = true;
+  cfgResY.xNDivisions = 5;
+
+  std::vector<std::pair<TH1 &, HistPainterConfig>> loorxyHists;
+  std::vector<std::pair<TH1 &, HistPainterConfig>> loorxHists;
+  std::vector<std::pair<TH1 &, HistPainterConfig>> looryHists;
+  cfgResX.canvasYSize = 10000. / opt.chipIds.size();
+  cfgResY.canvasYSize = 10000. / opt.chipIds.size();
+  for (std::size_t id : opt.chipIds) {
+    loorxyHists.push_back({leaveOneOutResidualsXYHists.at(id), cfgResXY});
+    loorxHists.push_back({leaveOneOutResidualsXHists.at(id), cfgResX});
+    looryHists.push_back({leaveOneOutResidualsYHists.at(id), cfgResY});
+  }
+  saveHist(c, cOption, loorxyHists);
+  saveHist(c, cOption, loorxHists);
+  saveHist(c, cOption, looryHists);
+
+  // Pulls
+  HistPainterConfig cfgPullX;
+  cfgPullX.canvasXSize = 10000;
+  cfgPullX.canvasYSize = 10000. / 3;
+  cfgPullX.stats = true;
+  cfgPullX.xTitle = "(x^{hit} - x^{est})/#sigma^{est}_{x}";
+  cfgPullX.yTitle = "Prob.";
+  cfgPullX.stats = true;
+  cfgPullX.xAdjustDivisions = true;
+  cfgPullX.xNDivisions = 5;
+
+  HistPainterConfig cfgPullY;
+  cfgPullY.canvasXSize = 10000;
+  cfgPullY.canvasYSize = 10000. / 3;
+  cfgPullY.stats = true;
+  cfgPullY.xTitle = "(y^{hit} - y^{est})/#sigma^{est}_{y}";
+  cfgPullY.yTitle = "Prob.";
+  cfgPullY.stats = true;
+  cfgPullY.xAdjustDivisions = true;
+  cfgPullY.xNDivisions = 5;
+
+  std::vector<std::pair<TH1 &, HistPainterConfig>> loopxHists;
+  std::vector<std::pair<TH1 &, HistPainterConfig>> loopyHists;
+  cfgPullX.canvasYSize = 10000. / opt.chipIds.size();
+  cfgPullY.canvasYSize = 10000. / opt.chipIds.size();
+  for (std::size_t id : opt.chipIds) {
+    loopxHists.push_back({leaveOneOutPullsXHists.at(id), cfgPullX});
+    loopyHists.push_back({leaveOneOutPullsYHists.at(id), cfgPullY});
+  }
+  saveHist(c, cOption, loopxHists);
+  saveHist(c, cOption, loopyHists);
+}
+
+void RootTrackAnalyzer::Stats::Uncertainty::init(const std::string &prefix,
+                                                 const Options &opt) {
+  // Track hits errors
+  for (int id : opt.chipIds) {
+    std::string nameTrackHitsErrorX =
+        prefix + "TrackHitsErrorX" + std::to_string(id);
+    trackHitsErrorXHists.insert(
+        {id, TH1D(nameTrackHitsErrorX.c_str(), nameTrackHitsErrorX.c_str(),
+                  opt.trackHitsErrorBinsX, opt.trackHitsErrorMinX,
+                  opt.trackHitsErrorMaxX)});
+    std::string nameTrackHitsErrorY =
+        prefix + "TrackHitsErrorY" + std::to_string(id);
+    trackHitsErrorYHists.insert(
+        {id, TH1D(nameTrackHitsErrorY.c_str(), nameTrackHitsErrorY.c_str(),
+                  opt.trackHitsErrorBinsY, opt.trackHitsErrorMinY,
+                  opt.trackHitsErrorMaxY)});
+    std::string nameTrackHitsErrorXY =
+        prefix + "TrackHitsErrorXY" + std::to_string(id);
+    trackHitsErrorXYHists.insert(
+        {id, TH2D(nameTrackHitsErrorXY.c_str(), nameTrackHitsErrorXY.c_str(),
+                  opt.trackHitsErrorBinsX, opt.trackHitsErrorMinX,
+                  opt.trackHitsErrorMaxX, opt.trackHitsErrorBinsY,
+                  opt.trackHitsErrorMinY, opt.trackHitsErrorMaxY)});
+
+    std::string nameLeaveOneOutTrackHitsErrorX =
+        prefix + "LeaveOneOutTrackHitsErrorX" + std::to_string(id);
+    leaveOneOutTrackHitsErrorXHists.insert(
+        {id, TH1D(nameLeaveOneOutTrackHitsErrorX.c_str(),
+                  nameLeaveOneOutTrackHitsErrorX.c_str(),
+                  opt.trackHitsLooErrorBinsX, opt.trackHitsLooErrorMinX,
+                  opt.trackHitsLooErrorMaxX)});
+    std::string nameLeaveOneOutTrackHitsErrorY =
+        prefix + "LeaveOneOutTrackHitsErrorY" + std::to_string(id);
+    leaveOneOutTrackHitsErrorYHists.insert(
+        {id, TH1D(nameLeaveOneOutTrackHitsErrorY.c_str(),
+                  nameLeaveOneOutTrackHitsErrorY.c_str(),
+                  opt.trackHitsLooErrorBinsY, opt.trackHitsLooErrorMinY,
+                  opt.trackHitsLooErrorMaxY)});
+    std::string nameLeaveOneOutTrackHitsErrorXY =
+        prefix + "LeaveOneOutTrackHitsErrorXY" + std::to_string(id);
+    leaveOneOutTrackHitsErrorXYHists.insert(
+        {id, TH2D(nameLeaveOneOutTrackHitsErrorXY.c_str(),
+                  nameLeaveOneOutTrackHitsErrorXY.c_str(),
+                  opt.trackHitsLooErrorBinsX, opt.trackHitsLooErrorMinX,
+                  opt.trackHitsLooErrorMaxX, opt.trackHitsLooErrorBinsY,
+                  opt.trackHitsLooErrorMinY, opt.trackHitsLooErrorMaxY)});
+
+    std::string nameLooTrackHitsErrorModelTrackHitsErrorX =
+        prefix + "LooTrackHitsErrorModelTrackHitsErrorX" + std::to_string(id);
+    looTrackHitsErrorModelTrackHitsErrorXHists.insert(
+        {id, TH2D(nameLooTrackHitsErrorModelTrackHitsErrorX.c_str(),
+                  nameLooTrackHitsErrorModelTrackHitsErrorX.c_str(),
+                  opt.trackHitsLooErrorBinsX, opt.trackHitsLooErrorMinX,
+                  opt.trackHitsLooErrorMaxX, opt.trackHitsErrorBinsX,
+                  opt.trackHitsErrorMinX, opt.trackHitsErrorMaxX)});
+    std::string nameLooTrackHitsErrorModelTrackHitsErrorY =
+        prefix + "LooTrackHitsErrorModelTrackHitsErrorY" + std::to_string(id);
+    looTrackHitsErrorModelTrackHitsErrorYHists.insert(
+        {id, TH2D(nameLooTrackHitsErrorModelTrackHitsErrorY.c_str(),
+                  nameLooTrackHitsErrorModelTrackHitsErrorY.c_str(),
+                  opt.trackHitsLooErrorBinsY, opt.trackHitsLooErrorMinY,
+                  opt.trackHitsLooErrorMaxY, opt.trackHitsErrorBinsY,
+                  opt.trackHitsErrorMinY, opt.trackHitsErrorMaxY)});
+
+    std::string nameLooTrackHitsErrorXTrackHitsLocalX =
+        prefix + "LooTrackHitsErrorXTrackHitsLocalX" + std::to_string(id);
+    looTrackHitsErrorXTrackHitsLocalXHists.insert(
+        {id, TH2D(nameLooTrackHitsErrorXTrackHitsLocalX.c_str(),
+                  nameLooTrackHitsErrorXTrackHitsLocalX.c_str(),
+                  opt.trackHitsLooErrorBinsX, opt.trackHitsLooErrorMinX,
+                  opt.trackHitsLooErrorMaxX, opt.trackHitsLocalBinsX,
+                  opt.trackHitsLocalMinX, opt.trackHitsLocalMaxX)});
+  }
+
+  // Track residuals vs track hit errors
+  for (int id : opt.chipIds) {
+    std::string rxhexName =
+        prefix + "SmoothedResidualsXTrackHitsErrorX" + std::to_string(id);
+    smoothedResidualsXTrackHitsErrorXHists.insert(
+        {id, TH2D(rxhexName.c_str(), rxhexName.c_str(), opt.trackHitsErrorBinsX,
+                  opt.trackHitsErrorMinX, opt.trackHitsErrorMaxX,
+                  opt.residualsXBins, opt.residualsXMin, opt.residualsXMax)});
+    std::string ryheyName =
+        prefix + "SmoothedResidualsYTrackHitsErrorY" + std::to_string(id);
+    smoothedResidualsYTrackHitsErrorYHists.insert(
+        {id, TH2D(ryheyName.c_str(), ryheyName.c_str(), opt.trackHitsErrorBinsY,
+                  opt.trackHitsErrorMinY, opt.trackHitsErrorMaxY,
+                  opt.residualsYBins, opt.residualsYMin, opt.residualsYMax)});
+  }
+}
+
+void RootTrackAnalyzer::Stats::Uncertainty::bookClusterShape(
+    std::size_t shapeId, const Options &opt) {
+  std::string nameClusterMatrix = "ClusterMatrix" + std::to_string(shapeId);
+  clusterMatricesHists.insert(
+      {shapeId,
+       TH2I(nameClusterMatrix.c_str(), nameClusterMatrix.c_str(),
+            opt.clusterSizeBins, opt.clusterSizeMin, opt.clusterSizeMax,
+            opt.clusterSizeBins, opt.clusterSizeMin, opt.clusterSizeMax)});
+
+  std::string nameClusterMatrixLooResX =
+      "ClusterMatrixLooResX" + std::to_string(shapeId);
+  clusterMatrixLooResXHists.insert(
+      {shapeId, TH1D(nameClusterMatrixLooResX.c_str(),
+                     nameClusterMatrixLooResX.c_str(), opt.looResidualsXBins,
+                     opt.looResidualsXMin, opt.looResidualsXMax)});
+  std::string nameClusterMatrixLooResY =
+      "ClusterMatrixLooResY" + std::to_string(shapeId);
+  clusterMatrixLooResYHists.insert(
+      {shapeId, TH1D(nameClusterMatrixLooResY.c_str(),
+                     nameClusterMatrixLooResY.c_str(), opt.looResidualsYBins,
+                     opt.looResidualsYMin, opt.looResidualsYMax)});
+
+  std::string nameClusterMatrixLooErrorX =
+      "ClusterMatrixLooErrorX" + std::to_string(shapeId);
+  clusterMatrixLooErrorXHists.insert(
+      {shapeId,
+       TH1D(nameClusterMatrixLooErrorX.c_str(),
+            nameClusterMatrixLooErrorX.c_str(), opt.trackHitsLooErrorBinsX,
+            opt.trackHitsLooErrorMinX, opt.trackHitsLooErrorMaxX)});
+  std::string nameClusterMatrixLooErrorY =
+      "ClusterMatrixLooErrorY" + std::to_string(shapeId);
+  clusterMatrixLooErrorYHists.insert(
+      {shapeId,
+       TH1D(nameClusterMatrixLooErrorY.c_str(),
+            nameClusterMatrixLooErrorY.c_str(), opt.trackHitsLooErrorBinsY,
+            opt.trackHitsLooErrorMinY, opt.trackHitsLooErrorMaxY)});
+}
+
+void RootTrackAnalyzer::Stats::Uncertainty::finalize(
+    std::size_t clusterShapeGeoId) {
+  for (const auto &record : hitRecords) {
+    std::size_t geoId = record.geoId;
+
+    // Spread of the leave-one-out residuals over all the hits on the chip
+    double looResErrorX = std::sqrt(looResMomentsX.at(geoId).variance());
+    double looResErrorY = std::sqrt(looResMomentsY.at(geoId).variance());
+
+    double looTrackHitErrorX =
+        std::sqrt(looResErrorX * looResErrorX - record.looStateVarX);
+    double looTrackHitErrorY =
+        std::sqrt(looResErrorY * looResErrorY - record.looStateVarY);
+
+    // Leave one out track hit errors
+    leaveOneOutTrackHitsErrorXHists.at(geoId).Fill(looTrackHitErrorX);
+    leaveOneOutTrackHitsErrorYHists.at(geoId).Fill(looTrackHitErrorY);
+    leaveOneOutTrackHitsErrorXYHists.at(geoId).Fill(looTrackHitErrorX,
+                                                    looTrackHitErrorY);
+
+    looTrackHitsErrorModelTrackHitsErrorXHists.at(geoId).Fill(
+        looTrackHitErrorX, std::sqrt(record.hitVarX));
+    looTrackHitsErrorModelTrackHitsErrorYHists.at(geoId).Fill(
+        looTrackHitErrorY, std::sqrt(record.hitVarY));
+    looTrackHitsErrorXTrackHitsLocalXHists.at(geoId).Fill(looTrackHitErrorX,
+                                                          record.hitLocalX);
+
+    if (geoId == clusterShapeGeoId) {
+      clusterMatrixLooResXHists.at(record.shapeId).Fill(record.looResX);
+      clusterMatrixLooResYHists.at(record.shapeId).Fill(record.looResY);
+
+      clusterMatrixLooErrorXHists.at(record.shapeId).Fill(looTrackHitErrorX);
+      clusterMatrixLooErrorYHists.at(record.shapeId).Fill(looTrackHitErrorY);
+    }
+  }
+
+  // Cluster shape
+  for (const auto &[shapeId, clusterMatrix] : clusterMatrices) {
+    for (std::size_t n = 0; n < clusterMatrix.GetNrows(); n++) {
+      for (std::size_t m = 0; m < clusterMatrix.GetNcols(); m++) {
+        double x = m + 0.5;
+        double y = 4 - n - 0.5;
+        std::size_t bin = clusterMatricesHists.at(shapeId).FindBin(x, y);
+
+        clusterMatricesHists.at(shapeId).SetBinContent(bin,
+                                                       clusterMatrix(n, m));
+      }
+    }
+  }
+}
+
+void RootTrackAnalyzer::Stats::Uncertainty::normalize(std::size_t nBXs,
+                                                      const Options &opt) {
+  for (std::size_t geoId : opt.chipIds) {
+    trackHitsErrorXHists.at(geoId).Scale(1.0 / nBXs);
+    trackHitsErrorYHists.at(geoId).Scale(1.0 / nBXs);
+    trackHitsErrorXYHists.at(geoId).Scale(1.0 / nBXs);
+
+    leaveOneOutTrackHitsErrorXHists.at(geoId).Scale(1.0 / nBXs);
+    leaveOneOutTrackHitsErrorYHists.at(geoId).Scale(1.0 / nBXs);
+    leaveOneOutTrackHitsErrorXYHists.at(geoId).Scale(1.0 / nBXs);
+
+    looTrackHitsErrorModelTrackHitsErrorXHists.at(geoId).Scale(1.0 / nBXs);
+    looTrackHitsErrorModelTrackHitsErrorYHists.at(geoId).Scale(1.0 / nBXs);
+
+    looTrackHitsErrorXTrackHitsLocalXHists.at(geoId).Scale(1.0 / nBXs);
+
+    smoothedResidualsXTrackHitsErrorXHists.at(geoId).Scale(1.0 / nBXs);
+    smoothedResidualsYTrackHitsErrorYHists.at(geoId).Scale(1.0 / nBXs);
+  }
+}
+
+void RootTrackAnalyzer::Stats::Uncertainty::print(TCanvas &c,
+                                                  const std::string &cOption,
+                                                  const Options &opt) {
+  // Track hits error
+  HistPainterConfig cfgTrackHitsErrorX;
+  cfgTrackHitsErrorX.canvasXSize = 10000;
+  cfgTrackHitsErrorX.canvasYSize = 10000. / opt.chipIds.size();
+  cfgTrackHitsErrorX.stats = true;
+  cfgTrackHitsErrorX.xTitle = "#sigma_{x_{hit}}, [mm]";
+  cfgTrackHitsErrorX.yTitle = "Hits/BX";
+
+  HistPainterConfig cfgTrackHitsErrorY;
+  cfgTrackHitsErrorY.canvasXSize = 10000;
+  cfgTrackHitsErrorY.canvasYSize = 10000. / opt.chipIds.size();
+  cfgTrackHitsErrorY.stats = true;
+  cfgTrackHitsErrorY.xTitle = "#sigma_{y_{hit}}, [mm]";
+  cfgTrackHitsErrorY.yTitle = "Hits/BX";
+
+  HistPainterConfig cfgTrackHitsErrorXY;
+  cfgTrackHitsErrorXY.canvasXSize = 10000;
+  cfgTrackHitsErrorXY.canvasYSize = 10000. / opt.chipIds.size();
+  cfgTrackHitsErrorXY.stats = false;
+  cfgTrackHitsErrorXY.xTitle = "#sigma_{x_{hit}}, [mm]";
+  cfgTrackHitsErrorXY.yTitle = "#sigma_{y_{hit}}, [mm]";
+  cfgTrackHitsErrorXY.option = "col";
+
+  HistPainterConfig cfgLooTrackHitsErrorModelTrackHitsErrorX;
+  cfgLooTrackHitsErrorModelTrackHitsErrorX.canvasXSize = 10000;
+  cfgLooTrackHitsErrorModelTrackHitsErrorX.canvasYSize =
+      10000. / opt.chipIds.size();
+  cfgLooTrackHitsErrorModelTrackHitsErrorX.stats = false;
+  cfgLooTrackHitsErrorModelTrackHitsErrorX.xTitle =
+      "#sigma_{x_{hit, loo}}, [mm]";
+  cfgLooTrackHitsErrorModelTrackHitsErrorX.yTitle =
+      "#sigma_{x_{hit, model}}, [mm]";
+  cfgLooTrackHitsErrorModelTrackHitsErrorX.option = "col";
+
+  HistPainterConfig cfgLooTrackHitsErrorModelTrackHitsErrorY;
+  cfgLooTrackHitsErrorModelTrackHitsErrorY.canvasXSize = 10000;
+  cfgLooTrackHitsErrorModelTrackHitsErrorY.canvasYSize =
+      10000. / opt.chipIds.size();
+  cfgLooTrackHitsErrorModelTrackHitsErrorY.stats = false;
+  cfgLooTrackHitsErrorModelTrackHitsErrorY.xTitle =
+      "#sigma_{y_{hit, loo}}, [mm]";
+  cfgLooTrackHitsErrorModelTrackHitsErrorY.yTitle =
+      "#sigma_{y_{hit, model}}, [mm]";
+  cfgLooTrackHitsErrorModelTrackHitsErrorY.option = "col";
+
+  HistPainterConfig cfgLooTrackHitsErrorXTrackHitsLocalX;
+  cfgLooTrackHitsErrorXTrackHitsLocalX.canvasXSize = 10000;
+  cfgLooTrackHitsErrorXTrackHitsLocalX.canvasYSize =
+      10000. / opt.chipIds.size();
+  cfgLooTrackHitsErrorXTrackHitsLocalX.stats = false;
+  cfgLooTrackHitsErrorXTrackHitsLocalX.xTitle = "#sigma_{x_{hit, loo}}, [mm]";
+  cfgLooTrackHitsErrorXTrackHitsLocalX.yTitle = "x_{hit}, [mm]";
+  cfgLooTrackHitsErrorXTrackHitsLocalX.option = "col";
+
+  std::vector<std::pair<TH1 &, HistPainterConfig>> hexHists;
+  std::vector<std::pair<TH1 &, HistPainterConfig>> heyHists;
+  std::vector<std::pair<TH1 &, HistPainterConfig>> hexheyHists;
+
+  std::vector<std::pair<TH1 &, HistPainterConfig>> loohexHists;
+  std::vector<std::pair<TH1 &, HistPainterConfig>> looheyHists;
+  std::vector<std::pair<TH1 &, HistPainterConfig>> loohexheyHists;
+
+  std::vector<std::pair<TH1 &, HistPainterConfig>> loohexmhexHists;
+  std::vector<std::pair<TH1 &, HistPainterConfig>> looheymheyHists;
+
+  std::vector<std::pair<TH1 &, HistPainterConfig>> loohexthlxHists;
+  for (std::size_t id : opt.chipIds) {
+    hexHists.push_back({trackHitsErrorXHists.at(id), cfgTrackHitsErrorX});
+    heyHists.push_back({trackHitsErrorYHists.at(id), cfgTrackHitsErrorY});
+    hexheyHists.push_back({trackHitsErrorXYHists.at(id), cfgTrackHitsErrorXY});
+
+    loohexHists.push_back(
+        {leaveOneOutTrackHitsErrorXHists.at(id), cfgTrackHitsErrorX});
+    looheyHists.push_back(
+        {leaveOneOutTrackHitsErrorYHists.at(id), cfgTrackHitsErrorY});
+    loohexheyHists.push_back(
+        {leaveOneOutTrackHitsErrorXYHists.at(id), cfgTrackHitsErrorXY});
+
+    loohexmhexHists.push_back(
+        {looTrackHitsErrorModelTrackHitsErrorXHists.at(id),
+         cfgLooTrackHitsErrorModelTrackHitsErrorX});
+    looheymheyHists.push_back(
+        {looTrackHitsErrorModelTrackHitsErrorYHists.at(id),
+         cfgLooTrackHitsErrorModelTrackHitsErrorY});
+    loohexthlxHists.push_back({looTrackHitsErrorXTrackHitsLocalXHists.at(id),
+                               cfgLooTrackHitsErrorXTrackHitsLocalX});
+  }
+
+  saveHist(c, cOption, hexHists);
+  saveHist(c, cOption, heyHists);
+  saveHist(c, cOption, hexheyHists);
+
+  saveHist(c, cOption, loohexHists);
+  saveHist(c, cOption, looheyHists);
+  saveHist(c, cOption, loohexheyHists);
+
+  saveHist(c, cOption, loohexmhexHists);
+  saveHist(c, cOption, looheymheyHists);
+
+  saveHist(c, cOption, loohexthlxHists);
+
+  // Track residuals vs track hit errors
+  HistPainterConfig cfgRxHex;
+  cfgRxHex.canvasXSize = 10000;
+  cfgRxHex.canvasYSize = 10000. / opt.chipIds.size();
+  cfgRxHex.xTitle = "#sigma_{x_{hit}}, [mm]";
+  cfgRxHex.yTitle = "x^{hit} - x^{est}, [mm]";
+  cfgRxHex.option = "col";
+
+  HistPainterConfig cfgRyHey;
+  cfgRyHey.canvasXSize = 10000;
+  cfgRyHey.canvasYSize = 10000. / opt.chipIds.size();
+  cfgRyHey.xTitle = "#sigma_{y_{hit}}, [mm]";
+  cfgRyHey.yTitle = "y^{hit} - y^{est}, [mm]";
+  cfgRyHey.option = "col";
+
+  std::vector<std::pair<TH1 &, HistPainterConfig>> rxhexHists;
+  std::vector<std::pair<TH1 &, HistPainterConfig>> ryheyHists;
+  for (std::size_t id : opt.chipIds) {
+    rxhexHists.push_back(
+        {smoothedResidualsXTrackHitsErrorXHists.at(id), cfgRxHex});
+    ryheyHists.push_back(
+        {smoothedResidualsYTrackHitsErrorYHists.at(id), cfgRyHey});
+  }
+  saveHist(c, cOption, rxhexHists);
+  saveHist(c, cOption, ryheyHists);
 
   // Cluster shape
   HistPainterConfig cfgClusterMatrix;
@@ -2427,8 +2461,180 @@ void RootTrackAnalyzer::Stats::print() {
               {clusterMatrixLooErrorXHists.at(id), cfgClusterMatrixLooErrorX},
               {clusterMatrixLooErrorYHists.at(id), cfgClusterMatrixLooErrorY}});
   }
+}
 
-  // Dummy
-  HistPainterConfig dummyCfg;
-  saveHist(c, cOptionLast, {dummy, dummyCfg});
+void RootTrackAnalyzer::Stats::Correlations::init(const std::string &prefix,
+                                                  const Options &opt) {
+  std::vector<std::size_t> chipIds_(opt.chipIds.begin(), opt.chipIds.end());
+  std::sort(chipIds_.begin(), chipIds_.end());
+  for (std::size_t n = 0; n < chipIds_.size() - 1; n++) {
+    std::size_t idN = chipIds_.at(n);
+    for (std::size_t m = n + 1; m < chipIds_.size(); m++) {
+      auto mit = chipIds_.begin();
+      std::advance(mit, m);
+      std::size_t idM = chipIds_.at(m);
+
+      std::string nameTrackHitsLocalXXHists = prefix + "TrackHitsLocalXX" +
+                                              std::to_string(idN) +
+                                              std::to_string(idM);
+      trackHitsLocalXXHists.insert(
+          {idN * 100 + idM,
+           TH2D(nameTrackHitsLocalXXHists.c_str(),
+                nameTrackHitsLocalXXHists.c_str(), opt.trackHitsLocalBinsX,
+                opt.trackHitsLocalMinX, opt.trackHitsLocalMaxX,
+                opt.trackHitsLocalBinsX, opt.trackHitsLocalMinX,
+                opt.trackHitsLocalMaxX)});
+      std::string nameTrackHitsLocalYYHists = prefix + "TrackHitsLocalYY" +
+                                              std::to_string(idN) +
+                                              std::to_string(idM);
+      trackHitsLocalYYHists.insert(
+          {idN * 100 + idM,
+           TH2D(nameTrackHitsLocalYYHists.c_str(),
+                nameTrackHitsLocalYYHists.c_str(), opt.trackHitsLocalBinsY,
+                opt.trackHitsLocalMinY, opt.trackHitsLocalMaxY,
+                opt.trackHitsLocalBinsY, opt.trackHitsLocalMinY,
+                opt.trackHitsLocalMaxY)});
+    }
+  }
+
+  for (std::size_t n = 0; n < chipIds_.size() - 1; n++) {
+    std::size_t idN = chipIds_.at(n);
+    for (std::size_t m = n + 1; m < chipIds_.size(); m++) {
+      auto mit = chipIds_.begin();
+      std::advance(mit, m);
+      std::size_t idM = chipIds_.at(m);
+
+      std::string nameSmoothedResidualsXXHists =
+          prefix + "SmoothedResidualsXX" + std::to_string(idN) +
+          std::to_string(idM);
+      smoothedResidualsXXHists.insert(
+          {idN * 100 + idM,
+           TH2D(nameSmoothedResidualsXXHists.c_str(),
+                nameSmoothedResidualsXXHists.c_str(), opt.residualsXBins,
+                opt.residualsXMin, opt.residualsXMax, opt.residualsXBins,
+                opt.residualsXMin, opt.residualsXMax)});
+      std::string nameSmoothedResidualsYYHists =
+          prefix + "SmoothedResidualsYY" + std::to_string(idN) +
+          std::to_string(idM);
+      smoothedResidualsYYHists.insert(
+          {idN * 100 + idM,
+           TH2D(nameSmoothedResidualsYYHists.c_str(),
+                nameSmoothedResidualsYYHists.c_str(), opt.residualsYBins,
+                opt.residualsYMin, opt.residualsYMax, opt.residualsYBins,
+                opt.residualsYMin, opt.residualsYMax)});
+    }
+  }
+}
+
+void RootTrackAnalyzer::Stats::Correlations::normalize(std::size_t nBXs) {
+  for (auto &[id, hist] : trackHitsLocalXXHists) {
+    hist.Scale(1.0 / nBXs);
+  }
+  for (auto &[id, hist] : trackHitsLocalYYHists) {
+    hist.Scale(1.0 / nBXs);
+  }
+  for (auto &[id, hist] : smoothedResidualsXXHists) {
+    hist.Scale(1.0 / nBXs);
+  }
+  for (auto &[id, hist] : smoothedResidualsYYHists) {
+    hist.Scale(1.0 / nBXs);
+  }
+}
+
+void RootTrackAnalyzer::Stats::Correlations::print(TCanvas &c,
+                                                   const std::string &cOption,
+                                                   const Options &opt,
+                                                   TH1D &dummy) {
+  HistPainterConfig cfgHitXHitX;
+  cfgHitXHitX.canvasXSize = 10000;
+  cfgHitXHitX.canvasYSize = 10000. / (opt.chipIds.size() - 1);
+  cfgHitXHitX.stats = true;
+  cfgHitXHitX.xTitle = "x^{hit}, [mm]";
+  cfgHitXHitX.yTitle = "x^{hit}, [mm]";
+  cfgHitXHitX.xAdjustDivisions = true;
+  cfgHitXHitX.xNDivisions = 5;
+
+  HistPainterConfig cfgHitYHitY;
+  cfgHitYHitY.canvasXSize = 10000;
+  cfgHitYHitY.canvasYSize = 10000. / (opt.chipIds.size() - 1);
+  cfgHitYHitY.stats = true;
+  cfgHitYHitY.xTitle = "y^{hit}, [mm]";
+  cfgHitYHitY.yTitle = "y^{hit}, [mm]";
+  cfgHitYHitY.xAdjustDivisions = true;
+  cfgHitYHitY.xNDivisions = 5;
+
+  std::vector<std::size_t> chipIds_(opt.chipIds.begin(), opt.chipIds.end());
+  std::sort(chipIds_.begin(), chipIds_.end());
+  for (std::size_t n = 0; n < chipIds_.size() - 1; n++) {
+    std::size_t idN = chipIds_.at(n);
+    std::vector<std::pair<TH1 &, HistPainterConfig>> hitxhitxHists;
+    for (std::size_t m = n + 1; m < chipIds_.size(); m++) {
+      std::size_t idM = chipIds_.at(m);
+      hitxhitxHists.push_back(
+          {trackHitsLocalXXHists.at(idN * 100 + idM), cfgHitXHitX});
+    }
+    for (std::size_t m = hitxhitxHists.size(); m < chipIds_.size() - 1; m++) {
+      hitxhitxHists.push_back({dummy, cfgHitXHitX});
+    }
+    saveHist(c, cOption, hitxhitxHists);
+  }
+  for (std::size_t n = 0; n < chipIds_.size() - 1; n++) {
+    std::size_t idN = chipIds_.at(n);
+    std::vector<std::pair<TH1 &, HistPainterConfig>> hityhityHists;
+    for (std::size_t m = n + 1; m < chipIds_.size(); m++) {
+      std::size_t idM = chipIds_.at(m);
+      hityhityHists.push_back(
+          {trackHitsLocalYYHists.at(idN * 100 + idM), cfgHitYHitY});
+    }
+    for (std::size_t m = hityhityHists.size(); m < chipIds_.size() - 1; m++) {
+      hityhityHists.push_back({dummy, cfgHitYHitY});
+    }
+    saveHist(c, cOption, hityhityHists);
+  }
+
+  HistPainterConfig cfgResXResX;
+  cfgResXResX.canvasXSize = 10000;
+  cfgResXResX.canvasYSize = 10000. / (opt.chipIds.size() - 1);
+  cfgResXResX.stats = true;
+  cfgResXResX.xTitle = "x^{hit} - x^{est}, [mm]";
+  cfgResXResX.yTitle = "x^{hit} - x^{est}, [mm]";
+  cfgResXResX.xAdjustDivisions = true;
+  cfgResXResX.xNDivisions = 5;
+
+  HistPainterConfig cfgResYResY;
+  cfgResYResY.canvasXSize = 10000;
+  cfgResYResY.canvasYSize = 10000. / (opt.chipIds.size() - 1);
+  cfgResYResY.stats = true;
+  cfgResYResY.xTitle = "y^{hit} - y^{est}, [mm]";
+  cfgResYResY.yTitle = "y^{hit} - y^{est}, [mm]";
+  cfgResYResY.xAdjustDivisions = true;
+  cfgResYResY.xNDivisions = 5;
+
+  std::sort(chipIds_.begin(), chipIds_.end());
+  for (std::size_t n = 0; n < chipIds_.size() - 1; n++) {
+    std::size_t idN = chipIds_.at(n);
+    std::vector<std::pair<TH1 &, HistPainterConfig>> resxresxHists;
+    for (std::size_t m = n + 1; m < chipIds_.size(); m++) {
+      std::size_t idM = chipIds_.at(m);
+      resxresxHists.push_back(
+          {smoothedResidualsXXHists.at(idN * 100 + idM), cfgResXResX});
+    }
+    for (std::size_t m = resxresxHists.size(); m < chipIds_.size() - 1; m++) {
+      resxresxHists.push_back({dummy, cfgResXResX});
+    }
+    saveHist(c, cOption, resxresxHists);
+  }
+  for (std::size_t n = 0; n < chipIds_.size() - 1; n++) {
+    std::size_t idN = chipIds_.at(n);
+    std::vector<std::pair<TH1 &, HistPainterConfig>> resyresyHists;
+    for (std::size_t m = n + 1; m < chipIds_.size(); m++) {
+      std::size_t idM = chipIds_.at(m);
+      resyresyHists.push_back(
+          {smoothedResidualsYYHists.at(idN * 100 + idM), cfgResYResY});
+    }
+    for (std::size_t m = resyresyHists.size(); m < chipIds_.size() - 1; m++) {
+      resyresyHists.push_back({dummy, cfgResYResY});
+    }
+    saveHist(c, cOption, resyresyHists);
+  }
 }

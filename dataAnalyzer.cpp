@@ -161,6 +161,11 @@ int main() {
 
   analyzerOpt.nBXs = 54500;  // Sig
 
+  // Plot blocks
+  analyzerOpt.plotLeaveOneOut = true;
+  analyzerOpt.plotUncertainty = true;
+  analyzerOpt.plotCorrelations = true;
+
   // --------------------------------------------------
   // No cuts
   analyzerOpt.minOcc = 0;

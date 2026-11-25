@@ -2,11 +2,15 @@
 
 #include <cstddef>
 #include <limits>
+#include <map>
 #include <set>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "DetectorEvent.hpp"
+#include "TCanvas.h"
 #include "TChain.h"
 #include "TF1.h"
 #include "TFile.h"
@@ -168,11 +172,245 @@ class RootTrackAnalyzer {
       double vertexYMax;
     };
 
+    /// @brief core plots block
+    struct Core {
+      void init(const std::string& prefix, const Options& opt);
+
+      void normalize(std::size_t nBXs, const Options& opt);
+
+      void print(TCanvas& c, const std::string& cOptionFirst,
+                 const std::string& cOption, const Options& opt);
+
+      /// Cut flow
+      TH1D cutFlowHist;
+
+      /// X count
+      TH1D xCountHist;
+
+      /// Mag conf hist
+      TH2D magnetConfHist;
+
+      /// Number of tracks/BX vs number of clusters/BX
+      std::map<std::size_t, TH1D> nClustersHist;
+      TH1D nTracksHist;
+      TH2D nTracksNClustersHist;
+
+      /// Chi2
+      TH1D chi2PredictedHist;
+      TH1D chi2FilteredHist;
+      TH1D chi2SmoothedHist;
+
+      /// Chi2 functions
+      TH2D chi2SmoothedXCountHist;
+
+      /// Local track hits
+      std::map<std::size_t, TH2D> trackHitsLocalHists;
+
+      /// Residuals
+      TH1D predictedResidualsXCumulativeHist;
+      TH1D filteredResidualsXCumulativeHist;
+      TH1D smoothedResidualsXCumulativeHist;
+
+      TH1D predictedResidualsYCumulativeHist;
+      TH1D filteredResidualsYCumulativeHist;
+      TH1D smoothedResidualsYCumulativeHist;
+
+      std::map<std::size_t, TH2D> filteredResidualsXYHists;
+      std::map<std::size_t, TH2D> smoothedResidualsXYHists;
+
+      std::map<std::size_t, TH1D> predictedResidualsXHists;
+      std::map<std::size_t, TH1D> filteredResidualsXHists;
+      std::map<std::size_t, TH1D> smoothedResidualsXHists;
+
+      std::map<std::size_t, TH1D> predictedResidualsYHists;
+      std::map<std::size_t, TH1D> filteredResidualsYHists;
+      std::map<std::size_t, TH1D> smoothedResidualsYHists;
+
+      /// Pulls
+      TH1D predictedPullsXCumulativeHist;
+      TH1D filteredPullsXCumulativeHist;
+      TH1D smoothedPullsXCumulativeHist;
+
+      TH1D predictedPullsYCumulativeHist;
+      TH1D filteredPullsYCumulativeHist;
+      TH1D smoothedPullsYCumulativeHist;
+
+      std::map<std::size_t, TH1D> predictedPullsXHists;
+      std::map<std::size_t, TH1D> filteredPullsXHists;
+      std::map<std::size_t, TH1D> smoothedPullsXHists;
+
+      std::map<std::size_t, TH1D> predictedPullsYHists;
+      std::map<std::size_t, TH1D> filteredPullsYHists;
+      std::map<std::size_t, TH1D> smoothedPullsYHists;
+
+      /// Momentum
+      TH1D originMomentumEstPxHist;
+      TH1D originMomentumEstPyHist;
+      TH1D originMomentumEstPzHist;
+
+      /// Momentum direction
+      TH1D originMomentumEstDxHist;
+      TH1D originMomentumEstDyHist;
+      TH1D originMomentumEstDzHist;
+
+      TH1D originMomentumEstPhiHist;
+      TH1D originMomentumEstThetaHist;
+
+      /// Vertex
+      TH2D vertexEstXYHist;
+      TH1D vertexEstXHist;
+      TH1D vertexEstYHist;
+
+      /// Track residuals vs track hit parameters
+      std::map<std::size_t, TH2D> smoothedResidualsXTrackHitsLocalXHists;
+      std::map<std::size_t, TH2D> smoothedResidualsXTrackHitsLocalYHists;
+      std::map<std::size_t, TH2D> smoothedResidualsXTrackHitsLocalPhiHists;
+      std::map<std::size_t, TH2D> smoothedResidualsYTrackHitsLocalXHists;
+      std::map<std::size_t, TH2D> smoothedResidualsYTrackHitsLocalYHists;
+      std::map<std::size_t, TH2D> smoothedResidualsYTrackHitsLocalPhiHists;
+
+      /// Track residuals vs track parameters
+      std::map<std::size_t, TH2D> smoothedResidualsXVertexEstXHists;
+      std::map<std::size_t, TH2D> smoothedResidualsXVertexEstYHists;
+      std::map<std::size_t, TH2D> smoothedResidualsYVertexEstXHists;
+      std::map<std::size_t, TH2D> smoothedResidualsYVertexEstYHists;
+
+      std::map<std::size_t, TH2D> smoothedResidualsXOriginMomentumEstPyHists;
+      std::map<std::size_t, TH2D> smoothedResidualsYOriginMomentumEstPyHists;
+
+      /// Track pulls vs track hit parameters
+      std::map<std::size_t, TH2D> smoothedPullsXTrackHitsLocalXHists;
+      std::map<std::size_t, TH2D> smoothedPullsXTrackHitsLocalYHists;
+      std::map<std::size_t, TH2D> smoothedPullsYTrackHitsLocalXHists;
+      std::map<std::size_t, TH2D> smoothedPullsYTrackHitsLocalYHists;
+    };
+
+    /// @brief leave-one-out plots block
+    struct LeaveOneOut {
+      void init(const std::string& prefix, const Options& opt);
+
+      void normalize(std::size_t nBXs, const Options& opt);
+
+      void print(TCanvas& c, const std::string& cOption, const Options& opt);
+
+      /// Residuals
+      std::map<std::size_t, TH2D> leaveOneOutResidualsXYHists;
+      std::map<std::size_t, TH1D> leaveOneOutResidualsXHists;
+      std::map<std::size_t, TH1D> leaveOneOutResidualsYHists;
+
+      /// Pulls
+      std::map<std::size_t, TH1D> leaveOneOutPullsXHists;
+      std::map<std::size_t, TH1D> leaveOneOutPullsYHists;
+    };
+
+    /// @brief uncertainty analysis plots block
+    struct Uncertainty {
+      /// @brief running mean and variance (Welford)
+      struct RunningMoments {
+        std::size_t n = 0;
+        double mean = 0;
+        double m2 = 0;
+
+        void add(double x);
+
+        /// Population variance
+        double variance() const;
+      };
+
+      /// @brief track hit quantities kept for the
+      /// leave-one-out hit error estimation
+      struct HitRecord {
+        std::size_t geoId = 0;
+        std::size_t shapeId = 0;
+        double hitLocalX = 0;
+        double hitVarX = 0;
+        double hitVarY = 0;
+        double looStateVarX = 0;
+        double looStateVarY = 0;
+        double looResX = 0;
+        double looResY = 0;
+      };
+
+      void init(const std::string& prefix, const Options& opt);
+
+      void bookClusterShape(std::size_t shapeId, const Options& opt);
+
+      /// Fill the leave-one-out hit error histograms
+      /// from the cached track hits
+      void finalize(std::size_t clusterShapeGeoId);
+
+      void normalize(std::size_t nBXs, const Options& opt);
+
+      void print(TCanvas& c, const std::string& cOption, const Options& opt);
+
+      /// Track hits errors
+      std::map<std::size_t, TH1D> trackHitsErrorXHists;
+      std::map<std::size_t, TH1D> trackHitsErrorYHists;
+      std::map<std::size_t, TH2D> trackHitsErrorXYHists;
+
+      std::map<std::size_t, TH1D> leaveOneOutTrackHitsErrorXHists;
+      std::map<std::size_t, TH1D> leaveOneOutTrackHitsErrorYHists;
+      std::map<std::size_t, TH2D> leaveOneOutTrackHitsErrorXYHists;
+
+      std::map<std::size_t, TH2D> looTrackHitsErrorModelTrackHitsErrorXHists;
+      std::map<std::size_t, TH2D> looTrackHitsErrorModelTrackHitsErrorYHists;
+
+      std::map<std::size_t, TH2D> looTrackHitsErrorXTrackHitsLocalXHists;
+
+      /// Track residuals vs track hit errors
+      std::map<std::size_t, TH2D> smoothedResidualsXTrackHitsErrorXHists;
+      std::map<std::size_t, TH2D> smoothedResidualsYTrackHitsErrorYHists;
+
+      /// Cluster matrices
+      std::map<std::size_t, TH2I> clusterMatricesHists;
+
+      /// Cluster-matrix-specific leave-one-out distributions
+      std::map<std::size_t, TH1D> clusterMatrixLooResXHists;
+      std::map<std::size_t, TH1D> clusterMatrixLooResYHists;
+
+      std::unordered_map<std::size_t, TH1D> clusterMatrixLooErrorXHists;
+      std::unordered_map<std::size_t, TH1D> clusterMatrixLooErrorYHists;
+
+      /// Cluster shape IDs of the track hits
+      std::set<std::size_t> clusterShapeIds;
+
+      /// Last cluster matrix of each shape
+      /// on the cluster shape chip
+      std::map<std::size_t, TMatrixD> clusterMatrices;
+
+      /// Leave-one-out residuals moments per chip
+      std::map<std::size_t, RunningMoments> looResMomentsX;
+      std::map<std::size_t, RunningMoments> looResMomentsY;
+
+      /// Cached track hits
+      std::vector<HitRecord> hitRecords;
+    };
+
+    /// @brief global correlations plots block
+    struct Correlations {
+      void init(const std::string& prefix, const Options& opt);
+
+      void normalize(std::size_t nBXs);
+
+      void print(TCanvas& c, const std::string& cOption, const Options& opt,
+                 TH1D& dummy);
+
+      /// Local track hits correlations
+      std::map<std::size_t, TH2D> trackHitsLocalXXHists;
+      std::map<std::size_t, TH2D> trackHitsLocalYYHists;
+
+      /// Smoothed residuals correlations
+      std::map<std::size_t, TH2D> smoothedResidualsXXHists;
+      std::map<std::size_t, TH2D> smoothedResidualsYYHists;
+    };
+
     Stats() = default;
 
     Options opt;
 
     void init(const std::string& pfix, const Options& opt);
+
+    void normalize(std::size_t nBXs);
 
     void reset();
 
@@ -180,6 +418,11 @@ class RootTrackAnalyzer {
 
     std::string prefix = "";
     std::set<std::size_t> chipIds;
+
+    /// Enabled plot blocks
+    bool leaveOneOutEnabled = false;
+    bool uncertaintyEnabled = false;
+    bool correlationsEnabled = false;
 
     /// Counters and cut flow
     std::size_t nTotal = 0;
@@ -194,150 +437,11 @@ class RootTrackAnalyzer {
     std::size_t nPassedMomentumZ = 0;
     std::size_t nPassedResiduals = 0;
 
-    /// Cut flow
-    TH1D cutFlowHist;
-
-    /// X count
-    TH1D xCountHist;
-
-    /// Mag conf hist
-    TH2D magnetConfHist;
-
-    /// Number of tracks/BX vs number of clusters/BX
-    std::map<std::size_t, TH1D> nClustersHist;
-    TH1D nTracksHist;
-    TH2D nTracksNClustersHist;
-
-    /// Cluster lengths hists
-    TH2D clusterLxLyHist;
-    TH1D clusterLxHist;
-    TH1D clusterLyHist;
-
-    /// Chi2
-    TH1D chi2PredictedHist;
-    TH1D chi2FilteredHist;
-    TH1D chi2SmoothedHist;
-
-    /// Chi2 functions
-    TH2D chi2SmoothedXCountHist;
-
-    /// Local track hits
-    std::map<std::size_t, TH2D> trackHitsLocalHists;
-
-    std::map<std::size_t, TH2D> trackHitsLocalXXHists;
-    std::map<std::size_t, TH2D> trackHitsLocalYYHists;
-
-    /// Track hits errors
-    std::map<std::size_t, TH1D> trackHitsErrorXHists;
-    std::map<std::size_t, TH1D> trackHitsErrorYHists;
-    std::map<std::size_t, TH2D> trackHitsErrorXYHists;
-
-    std::map<std::size_t, TH1D> leaveOneOutTrackHitsErrorXHists;
-    std::map<std::size_t, TH1D> leaveOneOutTrackHitsErrorYHists;
-    std::map<std::size_t, TH2D> leaveOneOutTrackHitsErrorXYHists;
-
-    std::map<std::size_t, TH2D> looTrackHitsErrorModelTrackHitsErrorXHists;
-    std::map<std::size_t, TH2D> looTrackHitsErrorModelTrackHitsErrorYHists;
-
-    std::map<std::size_t, TH2D> looTrackHitsErrorXTrackHitsLocalXHists;
-
-    /// Residuals
-    TH1D predictedResidualsXCumulativeHist;
-    TH1D filteredResidualsXCumulativeHist;
-    TH1D smoothedResidualsXCumulativeHist;
-
-    TH1D predictedResidualsYCumulativeHist;
-    TH1D filteredResidualsYCumulativeHist;
-    TH1D smoothedResidualsYCumulativeHist;
-
-    std::map<std::size_t, TH2D> filteredResidualsXYHists;
-    std::map<std::size_t, TH2D> smoothedResidualsXYHists;
-    std::map<std::size_t, TH2D> leaveOneOutResidualsXYHists;
-
-    std::map<std::size_t, TH2D> smoothedResidualsXXHists;
-    std::map<std::size_t, TH2D> smoothedResidualsYYHists;
-
-    std::map<std::size_t, TH1D> predictedResidualsXHists;
-    std::map<std::size_t, TH1D> filteredResidualsXHists;
-    std::map<std::size_t, TH1D> smoothedResidualsXHists;
-    std::map<std::size_t, TH1D> leaveOneOutResidualsXHists;
-
-    std::map<std::size_t, TH1D> predictedResidualsYHists;
-    std::map<std::size_t, TH1D> filteredResidualsYHists;
-    std::map<std::size_t, TH1D> smoothedResidualsYHists;
-    std::map<std::size_t, TH1D> leaveOneOutResidualsYHists;
-
-    /// Pulls
-    TH1D predictedPullsXCumulativeHist;
-    TH1D filteredPullsXCumulativeHist;
-    TH1D smoothedPullsXCumulativeHist;
-
-    TH1D predictedPullsYCumulativeHist;
-    TH1D filteredPullsYCumulativeHist;
-    TH1D smoothedPullsYCumulativeHist;
-
-    std::map<std::size_t, TH1D> predictedPullsXHists;
-    std::map<std::size_t, TH1D> filteredPullsXHists;
-    std::map<std::size_t, TH1D> smoothedPullsXHists;
-    std::map<std::size_t, TH1D> leaveOneOutPullsXHists;
-
-    std::map<std::size_t, TH1D> predictedPullsYHists;
-    std::map<std::size_t, TH1D> filteredPullsYHists;
-    std::map<std::size_t, TH1D> smoothedPullsYHists;
-    std::map<std::size_t, TH1D> leaveOneOutPullsYHists;
-
-    /// Momentum
-    TH1D originMomentumEstPxHist;
-    TH1D originMomentumEstPyHist;
-    TH1D originMomentumEstPzHist;
-
-    /// Momentum direction
-    TH1D originMomentumEstDxHist;
-    TH1D originMomentumEstDyHist;
-    TH1D originMomentumEstDzHist;
-
-    TH1D originMomentumEstPhiHist;
-    TH1D originMomentumEstThetaHist;
-
-    /// Vertex
-    TH2D vertexEstXYHist;
-    TH1D vertexEstXHist;
-    TH1D vertexEstYHist;
-
-    /// Track residuals vs track hit parameters
-    std::map<std::size_t, TH2D> smoothedResidualsXTrackHitsLocalXHists;
-    std::map<std::size_t, TH2D> smoothedResidualsXTrackHitsLocalYHists;
-    std::map<std::size_t, TH2D> smoothedResidualsXTrackHitsLocalPhiHists;
-    std::map<std::size_t, TH2D> smoothedResidualsYTrackHitsLocalXHists;
-    std::map<std::size_t, TH2D> smoothedResidualsYTrackHitsLocalYHists;
-    std::map<std::size_t, TH2D> smoothedResidualsYTrackHitsLocalPhiHists;
-    std::map<std::size_t, TH2D> smoothedResidualsXTrackHitsErrorXHists;
-    std::map<std::size_t, TH2D> smoothedResidualsYTrackHitsErrorYHists;
-
-    /// Track residuals vs track parameters
-    std::map<std::size_t, TH2D> smoothedResidualsXVertexEstXHists;
-    std::map<std::size_t, TH2D> smoothedResidualsXVertexEstYHists;
-    std::map<std::size_t, TH2D> smoothedResidualsYVertexEstXHists;
-    std::map<std::size_t, TH2D> smoothedResidualsYVertexEstYHists;
-
-    std::map<std::size_t, TH2D> smoothedResidualsXOriginMomentumEstPyHists;
-    std::map<std::size_t, TH2D> smoothedResidualsYOriginMomentumEstPyHists;
-
-    /// Track pulls vs track hit parameters
-    std::map<std::size_t, TH2D> smoothedPullsXTrackHitsLocalXHists;
-    std::map<std::size_t, TH2D> smoothedPullsXTrackHitsLocalYHists;
-    std::map<std::size_t, TH2D> smoothedPullsYTrackHitsLocalXHists;
-    std::map<std::size_t, TH2D> smoothedPullsYTrackHitsLocalYHists;
-
-    /// Cluster matrices
-    std::map<std::size_t, TH2I> clusterMatricesHists;
-
-    /// Cluster-matrix-specific leave-one-out distributions
-    std::map<std::size_t, TH1D> clusterMatrixLooResXHists;
-    std::map<std::size_t, TH1D> clusterMatrixLooResYHists;
-
-    std::unordered_map<std::size_t, TH1D> clusterMatrixLooErrorXHists;
-    std::unordered_map<std::size_t, TH1D> clusterMatrixLooErrorYHists;
+    /// Plot blocks
+    Core core;
+    LeaveOneOut leaveOneOut;
+    Uncertainty uncertainty;
+    Correlations correlations;
   };
 
   /// @brief nested configuration struct
@@ -390,6 +494,12 @@ class RootTrackAnalyzer {
     /// Momentum X cut
     double minMomentumX = -std::numeric_limits<double>::max();
     double maxMomentumX = std::numeric_limits<double>::max();
+    /// Plot the leave-one-out block
+    bool plotLeaveOneOut = false;
+    /// Plot the uncertainty analysis block
+    bool plotUncertainty = false;
+    /// Plot the global correlations block
+    bool plotCorrelations = false;
     /// Slicing step width in number of bins
     std::size_t sliceStepSize = 20;
     /// Slicing step width in number of bins
@@ -429,6 +539,27 @@ class RootTrackAnalyzer {
 
   /// Cluster chain owner
   TChain* m_clusterChainOwner = nullptr;
+
+  /// @brief collect the event IDs present in the track tree
+  std::unordered_set<std::size_t> collectTrackEventIds();
+
+  /// @brief enable only the track tree branches
+  /// needed by the cuts and the enabled plot blocks
+  void enableTrackBranches(const Options& opt);
+
+  /// @brief fill the core plots with the current track
+  void fillCore(
+      Stats& stats,
+      const std::unordered_map<std::size_t, std::size_t>& clustersPerChip);
+
+  /// @brief fill the leave-one-out plots with the current track
+  void fillLeaveOneOut(Stats& stats);
+
+  /// @brief fill the uncertainty plots with the current track
+  void fillUncertainty(Stats& stats, std::size_t clusterShapeGeoId);
+
+  /// @brief fill the global correlations plots with the current track
+  void fillCorrelations(Stats& stats);
 
  protected:
   ///--------------------------------------
